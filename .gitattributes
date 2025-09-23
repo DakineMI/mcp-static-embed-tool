@@ -1,0 +1,5 @@
+# Git attributes file for encryption
+
+# Encrypt .specstory folder (personal conversations)
+.specstory/** filter=git-crypt diff=git-crypt
+.specstory/.* filter=git-crypt diff=git-crypt

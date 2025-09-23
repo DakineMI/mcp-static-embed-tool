@@ -1,0 +1,169 @@
+pub mod api;
+pub mod api_keys;
+pub mod auth;
+pub mod http;
+pub mod limit;
+pub mod start;
+pub mod start_simple;
+
+pub use start_simple::start_http_server;
+
+use axum::{
+    extract::{Json, Query},
+    response::Json as ResponseJson,
+    routing::post,
+    Router,
+};
+use model2vec_rs::model::StaticModel;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::collections::HashMap;
+use crate::cli::StartArgs;
+use crate::server::api::AppState;
+
+#[derive(Deserialize)]
+pub struct EmbeddingRequest {
+    pub input: Vec<String>,
+    pub model: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct QueryParams {
+    pub model: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct EmbeddingResponse {
+    pub data: Vec<EmbeddingData>,
+    pub model: String,
+    pub usage: Usage,
+}
+
+#[derive(Serialize)]
+pub struct EmbeddingData {
+    pub object: String,
+    pub embedding: Vec<f32>,
+    pub index: usize,
+}
+
+#[derive(Serialize)]
+pub struct Usage {
+    pub prompt_tokens: usize,
+    pub total_tokens: usize,
+}
+
+pub struct AppState {
+    pub models: HashMap<String, StaticModel>,
+    pub default_model: String,
+}
+
+impl AppState {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let mut models = HashMap::new();
+        
+        // Load built-in models
+        models.insert(
+            "potion-8M".to_string(),
+            StaticModel::from_pretrained("minishlab/potion-base-8M", None, None, None)?
+        );
+        models.insert(
+            "potion-32M".to_string(),
+            StaticModel::from_pretrained("minishlab/potion-base-32M", None, None, None)?
+        );
+        
+        // Load custom distilled models if available
+        if let Ok(code_model) = StaticModel::from_pretrained("./code-model-distilled", None, None, None) {
+            models.insert("code-distilled".to_string(), code_model);
+        }
+        
+        Ok(AppState {
+            models,
+            default_model: "potion-32M".to_string(),
+        })
+    }
+}
+
+pub async fn embeddings_handler(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    Query(params): Query<QueryParams>,
+    Json(request): Json<EmbeddingRequest>,
+) -> ResponseJson<EmbeddingResponse> {
+    
+    let model_name = request.model
+        .or(params.model)
+        .unwrap_or_else(|| state.default_model.clone());
+    
+    let model = state.models.get(&model_name)
+        .unwrap_or_else(|| state.models.get(&state.default_model).unwrap());
+    
+    let embeddings = model.encode(&request.input);
+    
+    let data = embeddings
+        .iter()
+        .enumerate()
+        .map(|(index, embedding)| EmbeddingData {
+            object: "embedding".to_string(),
+            embedding: embedding.clone(),
+            index,
+        })
+        .collect();
+    
+    ResponseJson(EmbeddingResponse {
+        data,
+        model: model_name,
+        usage: Usage {
+            prompt_tokens: request.input.iter().map(|s| s.len()).sum(),
+            total_tokens: request.input.iter().map(|s| s.len()).sum(),
+        },
+    })
+}
+
+pub async fn start_embedding_server(args: StartArgs) -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    crate::logs::init_logging_and_metrics(false);
+    
+    // Create shared app state with loaded models
+    let app_state = Arc::new(AppState::new()?);
+    
+    // Initialize API key manager
+    let api_key_manager = Arc::new(crate::server::api_keys::ApiKeyManager::new());
+    
+    // Create the OpenAI-compatible API router with API key authentication
+    let api_router = crate::server::api::create_api_router()
+        .with_state(app_state)
+        .layer(crate::server::api_keys::api_key_auth_middleware(api_key_manager.clone()));
+    
+    // Create the API key management router (no auth required for registration)
+    let api_key_router = crate::server::api_keys::create_api_key_router()
+        .with_state(api_key_manager.clone());
+    
+    // Create health check route
+    let health_router = Router::new()
+        .route("/health", axum::routing::get(crate::server::http::health));
+
+    // Combine all routers
+    let app = Router::new()
+        .merge(api_router)           // Protected API routes
+        .merge(api_key_router)       // API key management routes
+        .merge(health_router)        // Health check
+        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(tower_http::cors::CorsLayer::permissive())
+        .layer(crate::server::limit::create_rate_limit_layer(100, 10)); // Basic rate limiting
+
+    let bind_addr = format!("{}:{}", args.bind, args.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    
+    println!("🚀 Embedding server with API key authentication running on http://{}", bind_addr);
+    println!("📚 Available endpoints:");
+    println!("  POST /v1/embeddings     - OpenAI-compatible embedding API (API key required)");
+    println!("  GET  /v1/models         - List available models (API key required)");
+    println!("  POST /api/register      - Self-register for API key");
+    println!("  GET  /api/keys          - List API keys (API key required)");
+    println!("  DELETE /api/keys/:id    - Revoke API key (API key required)");
+    println!("  GET  /health            - Health check");
+    println!("🔑 API Key Authentication: ENABLED");
+    println!("💡 Get your API key: curl -X POST http://{}/api/register -H 'Content-Type: application/json' -d '{{\"name\":\"my-app\"}}'", bind_addr);
+    
+    axum::serve(listener, app).await?;
+    Ok(())
+}
