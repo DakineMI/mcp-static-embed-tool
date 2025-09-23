@@ -1,0 +1,54 @@
+[package]
+name = "static-embedding-tool"
+version = "1.0.0"
+edition = "2024"
+
+[features]
+default = ["cli", "mcp"]
+cli = ["dep:clap", "dep:sysinfo", "dep:tracing-subscriber"]
+mcp = ["dep:axum", "dep:rmcp", "dep:tower-http", "dep:sysinfo", "dep:metrics", "dep:tracing-subscriber"]
+
+[dependencies]
+axum = { version = "*", features = ["json", "macros"], optional = true }
+clap = { version = "*", features = ["derive"], optional = true }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
+anyhow = "*"
+thiserror = "*"
+model2vec-rs = "*"
+hf-hub = "*"
+reqwest = { version = "*", features = [
+    "json",
+    "rustls-tls",
+], default-features = false }
+tracing = "*"
+tracing-subscriber = { version = "*", features = ["env-filter"], optional = true }
+toml = "*"
+tempfile = "*"
+rand = "*"
+metrics = { version = "*", optional = true }
+futures = "*"
+tower-http = { version = "*", features = ["trace", "cors"], optional = true }
+uuid = { version = "*", features = ["serde", "v4"] }
+ulid-rs = "*"
+sysinfo = { version = "*", optional = true }
+tokio = { version = "*", features = [
+    "signal",
+    "rt-multi-thread",
+    "tracing",
+    "parking_lot",
+    "time",
+    "bytes",
+    "process",
+] }
+chrono = { version = "*", features = ["serde"] }
+schemars = { version = "*", features = ["derive"] }
+rmcp = { version = "*", features = [
+    "axum",
+    "transport-streamable-http-server",
+    "transport-streamable-http-server-session",
+    "schemars",
+    "server-side-http",
+    "uuid",
+    "transport-io",
+], optional = true }
