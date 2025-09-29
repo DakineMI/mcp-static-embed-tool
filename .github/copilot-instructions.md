@@ -1,4 +1,9 @@
 ---
+description: AI rules derived by SpecStory from the project AI interaction history
+globs: *
+---
+
+---
 description: Static embedding server with Model2Vec integration and MCP capabilities
 globs: *
 ---
@@ -7,7 +12,7 @@ globs: *
 
 This is a **static embedding server** built with Rust, providing HTTP API and MCP (streaming http) for Model2Vec embeddings in OpenAI-compatible format, and a CLI interface to manage and configure the server.
 
-**Note**: The codebase has been successfully transformed from SurrealDB MCP server components to a dedicated embedding server. The transformation maintained proven patterns from the SurrealDB project including authentication, rate limiting, CLI design, and MCP integration while adapting them for embedding-specific functionality.
+**Note**: The codebase has been successfully transformed from SurrealDB MCP server components to a dedicated embedding server. The transformation maintained proven patterns from the SurrealDB project including authentication, rate limiting, CLI design, and MCP integration while adapting them for embedding-specific functionality. All things SurrealDB will eventually get removed or replaced.
 
 **Core Focus**: HTTP API and MCP serving multiple Model2Vec embedding models with graceful fallbacks and OpenAI API compatibility.
 
@@ -16,7 +21,7 @@ This is a **static embedding server** built with Rust, providing HTTP API and MC
 The following components have been successfully adapted from SurrealDB patterns:
 
 - **CLI Structure**: `src/cli/` implements embedding-specific commands (model distillation, server management, config)
-- **Authentication**: JWT/JWE patterns with JWKS adapted for embedding API security
+- **Authentication**: JWT/JWE patterns with JWKS adapted for embedding API security, also API key self-registration endpoint `/api/register`
 - **Rate Limiting**: IP-based rate limiting patterns protect embedding API endpoints
 - **MCP Integration**: Resource providers and tool implementations serve embedding documentation and utilities
 - **Server Architecture**: Axum + tower middleware stack provides robust foundation for HTTP + MCP modes
@@ -35,12 +40,13 @@ c. The terminal shows an error message with a stacktrace that indicates a bug in
 
 - **`src/main.rs`** - CLI entry point, delegates all functionality to the CLI module
 - **`src/cli/`** - Complete CLI implementation with subcommands for server, model, and config management
-- **`src/server/mod.rs`** - HTTP server implementation with Axum, loads multiple Model2Vec models (`potion-8M`, `potion-32M`, `code-distilled`)
+- **`src/server/mod.rs`** - HTTP server implementation with Axum, loads multiple Model2Vec models (`potion-8M`, `potion-32M`, `code-distilled`) and integrates API key authentication.
+- **`src/server/api_keys.rs`** - Complete API key authentication system.
 - **`src/utils/mod.rs`** - Utility functions including model distillation via external `model2vec` Python CLI
 - **`src/server/`** - HTTP server infrastructure (auth, rate limiting, health checks)
 - **`src/logs/mod.rs`** - Structured logging and metrics initialization with tracing-subscriber
 - **`src/resources/mod.rs`** - MCP resource provider system for serving documentation
-- **`src/tools/`** - MCP tool implementations providing patterns for embedding-related utilities
+- **`src/tools/mod.rs`** - MCP tool implementations providing patterns for embedding-related utilities for `EmbeddingService` and 5 embedding-focused tools (embed, batch_embed, list_models, model_info, distill_model)
 - **`src/cli/`** - CLI interface module to be implemented with embedding-specific commands (model management, distillation, server config)
 
 ### Key Patterns
@@ -54,11 +60,12 @@ c. The terminal shows an error message with a stacktrace that indicates a bug in
 
 - **Web Framework**: Axum with tower middleware stack
 - **ML Models**: model2vec-rs StaticModel for embeddings
-- **Authentication**: JWT/JWE bearer token validation with JWKS (adapted from SurrealDB project patterns)
+- **Authentication**: API key authentication, JWT/JWE bearer token validation with JWKS (adapted from SurrealDB project patterns), also API key self-registration endpoint `/api/register`
 - **Rate Limiting**: tower_governor with IP-based extraction
 - **Logging**: tracing with structured logs and metrics via tracing-subscriber
 - **Docker Support**: Multi-stage builds with chainguard base images
 - **Inherited Infrastructure**: Embedding-focused patterns adapted from SurrealDB project, MCP protocol (rmcp) - providing proven patterns for auth, rate limiting, and server architecture
+- **Dependencies for API key functionality**: uuid, sha2
 
 ## CLI IMPLEMENTATION GOALS
 
@@ -108,9 +115,17 @@ embed-tool batch embeddings.json --output results.json  # Batch processing
 cargo run  # Starts on 0.0.0.0:8080
 
 # Available models: potion-8M, potion-32M, code-distilled (if present)
+
+# Get API key
+curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'
+
+# Use for embeddings
 curl -X POST http://localhost:8080/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{"input": ["Hello world"], "model": "potion-32M"}'
+  -H "Authorization: Bearer embed-YOUR-API-KEY" \
+  -d '{"input":["Hello world"],"model":"potion-32M"}'
+
+# List available models
+curl http://localhost:8080/v1/models
 
 # Docker build and run
 docker build -t static-embed-tool .
@@ -141,6 +156,8 @@ distilled.save('output_path')
 
 ### Authentication Configuration
 
+- API key authentication
+- API key self-registration endpoint: `/api/register`
 - Bearer token validation with JWKS endpoint: `https://auth.embed.example.com/.well-known/jwks.json`
 - OAuth discovery at `/.well-known/oauth-protected-resource`
 - Custom audience configuration via `auth_audience` parameter
@@ -171,6 +188,57 @@ distilled.save('output_path')
 - IP-based extraction with fallback to "unknown" for missing headers
 - Configurable RPS and burst limits via `create_rate_limit_layer()`
 - Metrics integration with `counter!()` macros
+
+## API Endpoints
+
+### Core Functionality
+```
+POST /v1/embeddings     # OpenAI-compatible embedding API
+GET  /v1/models         # List available Model2Vec models (provides all model info)
+*    /v1/mcp            # MCP protocol endpoint
+GET  /health            # Simple health check for load balancers
+POST /api/register      # API key self-registration
+```
+
+### Standard OpenAI Endpoints (Properly Handled with Clear Errors)
+```
+POST /v1/chat/completions - Returns helpful error message
+POST /v1/completions - Returns helpful error message
+POST /v1/images/generations - Returns helpful error message
+POST /v1/audio/transcriptions - Returns helpful error message  
+POST /v1/audio/translations - Returns helpful error message
+POST /v1/fine-tuning/jobs - Returns helpful error message
+GET /v1/fine-tuning/jobs - Returns helpful error message
+POST /v1/files - Returns helpful error message
+GET /v1/files - Returns helpful error message
+```
+
+### OpenAI-Standard Error Format
+```json
+{
+  "error": {
+    "message": "This server only supports embedding operations. For chat completions, please use OpenAI's API directly.",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "unsupported_endpoint"
+  }
+}
+```
+
+### OpenAI-Standard Models Format
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "potion-32M",
+      "object": "model",
+      "created": 1640995200,
+      "owned_by": "minishlab"
+    }
+  ]
+}
+```
 
 ## DEBUGGING
 

@@ -5,6 +5,7 @@ pub mod http;
 pub mod limit;
 pub mod start;
 pub mod start_simple;
+pub mod state;
 
 pub use start_simple::start_http_server;
 
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::collections::HashMap;
 use crate::cli::StartArgs;
-use crate::server::api::AppState;
+use crate::server::state::AppState;
 
 #[derive(Deserialize)]
 pub struct EmbeddingRequest {
@@ -52,36 +53,6 @@ pub struct Usage {
     pub total_tokens: usize,
 }
 
-pub struct AppState {
-    pub models: HashMap<String, StaticModel>,
-    pub default_model: String,
-}
-
-impl AppState {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let mut models = HashMap::new();
-        
-        // Load built-in models
-        models.insert(
-            "potion-8M".to_string(),
-            StaticModel::from_pretrained("minishlab/potion-base-8M", None, None, None)?
-        );
-        models.insert(
-            "potion-32M".to_string(),
-            StaticModel::from_pretrained("minishlab/potion-base-32M", None, None, None)?
-        );
-        
-        // Load custom distilled models if available
-        if let Ok(code_model) = StaticModel::from_pretrained("./code-model-distilled", None, None, None) {
-            models.insert("code-distilled".to_string(), code_model);
-        }
-        
-        Ok(AppState {
-            models,
-            default_model: "potion-32M".to_string(),
-        })
-    }
-}
 
 pub async fn embeddings_handler(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,

@@ -5,12 +5,13 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use anyhow::Result;
 use model2vec_rs::model::StaticModel;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Shared application state containing loaded models
 #[derive(Clone)]
@@ -20,56 +21,7 @@ pub struct AppState {
     pub startup_time: SystemTime,
 }
 
-impl AppState {
-    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let mut models = HashMap::new();
-        
-        // Load multiple models for flexibility
-        info!("Loading Model2Vec models...");
-        
-        // Try loading potion-8M
-        match StaticModel::from_pretrained("minishlab/potion-base-8M", None, None, None) {
-            Ok(model) => {
-                info!("✓ Loaded potion-8M model");
-                models.insert("potion-8M".to_string(), model);
-            }
-            Err(e) => error!("✗ Failed to load potion-8M: {}", e),
-        }
-        
-        // Try loading potion-32M
-        match StaticModel::from_pretrained("minishlab/potion-base-32M", None, None, None) {
-            Ok(model) => {
-                info!("✓ Loaded potion-32M model");
-                models.insert("potion-32M".to_string(), model);
-            }
-            Err(e) => error!("✗ Failed to load potion-32M: {}", e),
-        }
-        
-        // Try loading custom distilled models if available
-        if let Ok(code_model) = StaticModel::from_pretrained("./code-model-distilled", None, None, None) {
-            info!("✓ Loaded custom code-distilled model");
-            models.insert("code-distilled".to_string(), code_model);
-        }
-        
-        if models.is_empty() {
-            return Err("No models could be loaded".into());
-        }
-        
-        let default_model = if models.contains_key("potion-32M") {
-            "potion-32M".to_string()
-        } else {
-            models.keys().next().unwrap().clone()
-        };
-        
-        info!("Loaded {} models, default: {}", models.len(), default_model);
-        
-        Ok(AppState {
-            models,
-            default_model,
-            startup_time: SystemTime::now(),
-        })
-    }
-}
+use super::state::AppState;
 
 // ============================================================================
 // Request/Response Structures
@@ -146,7 +98,45 @@ pub async fn embeddings_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<QueryParams>,
     Json(request): Json<EmbeddingRequest>,
-) -> Result<ResponseJson<EmbeddingResponse>, StatusCode> {
+) -> Result<ResponseJson<EmbeddingResponse>, (StatusCode, ResponseJson<ApiError>)> {
+    // Input validation
+    if request.input.is_empty() {
+        let error = ApiError {
+            error: ErrorDetails {
+                message: "Input too long or empty".to_string(),
+                r#type: "invalid_request_error".to_string(),
+                param: Some("input".to_string()),
+                code: None,
+            },
+        };
+        return Err((StatusCode::BAD_REQUEST, ResponseJson(error)));
+    }
+
+    if request.input.len() > 100 {
+        let error = ApiError {
+            error: ErrorDetails {
+                message: "Batch size too large. Maximum 100 inputs allowed.".to_string(),
+                r#type: "invalid_request_error".to_string(),
+                param: Some("input".to_string()),
+                code: None,
+            },
+        };
+        return Err((StatusCode::BAD_REQUEST, ResponseJson(error)));
+    }
+
+    for text in &request.input {
+        if text.is_empty() || text.len() > 8192 {
+            let error = ApiError {
+                error: ErrorDetails {
+                    message: "Input too long or empty".to_string(),
+                    r#type: "invalid_request_error".to_string(),
+                    param: Some("input".to_string()),
+                    code: None,
+                },
+            };
+            return Err((StatusCode::BAD_REQUEST, ResponseJson(error)));
+        }
+    }
     // Determine which model to use
     let model_name = request.model
         .or(params.model)
@@ -159,18 +149,88 @@ pub async fn embeddings_handler(
             // Fallback to default model if requested model not found
             match state.models.get(&state.default_model) {
                 Some(model) => model,
-                None => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+                None => {
+                    let error = ApiError {
+                        error: ErrorDetails {
+                            message: "No models available".to_string(),
+                            r#type: "server_error".to_string(),
+                            param: None,
+                            code: None,
+                        },
+                    };
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, ResponseJson(error)));
+                }
             }
         }
     };
     
-    // Generate embeddings
-    let embeddings = match model.encode(&request.input) {
-        Ok(embeddings) => embeddings,
-        Err(e) => {
-            error!("Failed to generate embeddings: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    // Generate embeddings with optional parallel chunking for large batches
+    let embeddings: Vec<Vec<f32>> = if request.input.len() <= 32 {
+        // Small batch: encode directly
+        match model.encode(&request.input) {
+            Ok(embeddings) => embeddings,
+            Err(e) => {
+                error!("Failed to generate embeddings: {}", e);
+                let error = ApiError {
+                    error: ErrorDetails {
+                        message: "Embedding generation failed".to_string(),
+                        r#type: "server_error".to_string(),
+                        param: None,
+                        code: None,
+                    },
+                };
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, ResponseJson(error)));
+            }
         }
+    } else {
+        // Large batch: split into chunks of 32 and process in parallel
+        use futures::future::join_all;
+        use tokio::task::spawn_blocking;
+
+        let chunk_size = 32;
+        let chunks: Vec<_> = request.input.chunks(chunk_size).collect();
+        let mut chunk_futures = Vec::new();
+
+        for chunk in chunks {
+            let chunk_vec: Vec<String> = chunk.to_vec();
+            let model_clone = model.clone(); // Assuming StaticModel is Clone
+            chunk_futures.push(spawn_blocking(move || model_clone.encode(&chunk_vec)));
+        }
+
+        let results = join_all(chunk_futures).await;
+        let mut all_embeddings = Vec::new();
+
+        for result in results {
+            match result {
+                Ok(Ok(embeddings)) => all_embeddings.extend(embeddings),
+                Ok(Err(e)) => {
+                    error!("Failed to generate chunk embeddings: {}", e);
+                    let error = ApiError {
+                        error: ErrorDetails {
+                            message: "Embedding generation failed".to_string(),
+                            r#type: "server_error".to_string(),
+                            param: None,
+                            code: None,
+                        },
+                    };
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, ResponseJson(error)));
+                }
+                Err(e) => {
+                    error!("Spawn blocking failed: {}", e);
+                    let error = ApiError {
+                        error: ErrorDetails {
+                            message: "Embedding generation failed".to_string(),
+                            r#type: "server_error".to_string(),
+                            param: None,
+                            code: None,
+                        },
+                    };
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, ResponseJson(error)));
+                }
+            }
+        }
+
+        all_embeddings
     };
     
     // Build response data
@@ -184,18 +244,14 @@ pub async fn embeddings_handler(
         })
         .collect();
 
-    // Calculate token usage (rough approximation)
-    let total_tokens = request.input.iter()
-        .map(|s| s.split_whitespace().count())
-        .sum();
-
+    // Usage for embeddings is 0 tokens
     let response = EmbeddingResponse {
         object: "list".to_string(),
         data,
         model: model_name,
         usage: Usage {
-            prompt_tokens: total_tokens,
-            total_tokens,
+            prompt_tokens: 0,
+            total_tokens: 0,
         },
     };
 

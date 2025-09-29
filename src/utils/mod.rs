@@ -138,3 +138,37 @@ pub fn distill(
     println!("✓ Model distilled successfully to: {}", final_output.display());
     Ok(())
 }
+
+pub fn calculate_total(numbers: &[i32]) -> i32 {
+    numbers.iter().sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_list() {
+        assert_eq!(calculate_total(&[]), 0);
+    }
+
+    #[test]
+    fn test_single_positive() {
+        assert_eq!(calculate_total(&[5]), 5);
+    }
+
+    #[test]
+    fn test_single_negative() {
+        assert_eq!(calculate_total(&[-3]), -3);
+    }
+
+    #[test]
+    fn test_multiple_numbers() {
+        assert_eq!(calculate_total(&[1, 2, 3, 4]), 10);
+    }
+
+    #[test]
+    fn test_with_zeros() {
+        assert_eq!(calculate_total(&[0, 0, 5]), 5);
+    }
+}

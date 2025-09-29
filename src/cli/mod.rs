@@ -71,17 +71,25 @@ pub struct StartArgs {
     #[arg(short, long, default_value = "0.0.0.0")]
     pub bind: String,
     
+    /// Unix socket path (mutually exclusive with bind)
+    #[arg(long, conflicts_with = "bind")]
+    pub socket_path: Option<PathBuf>,
+    
     /// Models to load (comma-separated)
-    #[arg(short, long)]
+    #[arg(short, long, validator = validate_models)]
     pub models: Option<String>,
     
     /// Default model to use
-    #[arg(short, long, default_value = "potion-32M")]
+    #[arg(short, long, default_value = "potion-32M", validator = validate_model_name)]
     pub default_model: String,
     
     /// Enable MCP mode alongside HTTP
     #[arg(long)]
     pub mcp: bool,
+    
+    /// Disable authentication
+    #[arg(long)]
+    pub auth_disabled: bool,
     
     /// Run as daemon (detached process)
     #[arg(short, long)]
@@ -90,6 +98,28 @@ pub struct StartArgs {
     /// PID file location for daemon mode
     #[arg(long)]
     pub pid_file: Option<PathBuf>,
+}
+
+/// Validate models string: comma-separated non-empty names
+fn validate_models(s: &str) -> Result<(), String> {
+    if s.trim().is_empty() {
+        return Err("Models list cannot be empty".to_string());
+    }
+    let parts: Vec<&str> = s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        Err("No valid models found in list".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate model name: non-empty
+fn validate_model_name(s: &str) -> Result<(), String> {
+    if s.trim().is_empty() {
+        Err("Model name cannot be empty".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Subcommand)]

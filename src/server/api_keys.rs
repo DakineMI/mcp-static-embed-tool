@@ -8,17 +8,21 @@ use axum::{
     Router, Json,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
+use sled::Db;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn, error};
 use uuid::Uuid;
+// No top-level use for sha2 needed, as it's used internally in mod sha256
 use rand::Rng;
 
 /// API Key information
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct ApiKey {
     /// Unique API key ID
     pub id: String,
@@ -76,19 +80,19 @@ pub struct ApiKeyInfo {
 /// API Key manager
 #[derive(Debug)]
 pub struct ApiKeyManager {
-    /// Storage for API keys (in-memory for now, could be database later)
-    keys: Arc<RwLock<HashMap<String, ApiKey>>>,
-    /// Index by key hash for fast lookup
-    key_index: Arc<RwLock<HashMap<String, String>>>, // hash -> id
+    /// Sled database
+    db: Db,
 }
 
 impl ApiKeyManager {
     /// Create a new API key manager
-    pub fn new() -> Self {
-        Self {
-            keys: Arc::new(RwLock::new(HashMap::new())),
-            key_index: Arc::new(RwLock::new(HashMap::new())),
-        }
+    pub fn new(db_path: &str) -> anyhow::Result<Self> {
+        let path = Path::new(db_path);
+        let db = sled::open(path)?;
+        // Ensure trees exist
+        let _ = db.open_tree("keys")?;
+        let _ = db.open_tree("hashes")?;
+        Ok(Self { db })
     }
 
     /// Generate a new API key
@@ -103,7 +107,7 @@ impl ApiKeyManager {
         let api_key = format!("embed-{}", STANDARD.encode(random_bytes));
         
         // Hash the API key for storage
-        let key_hash = format!("{:x}", sha256::digest(api_key.as_bytes()));
+        let key_hash = sha256::digest(api_key.as_bytes());
         
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -129,17 +133,17 @@ impl ApiKeyManager {
             description: request.description.clone(),
         };
 
-        // Store the API key
-        {
-            let mut keys = self.keys.write().await;
-            keys.insert(key_id.clone(), api_key_info.clone());
-        }
+        // Store the API key in DB
+        let keys_tree = self.db.open_tree("keys").map_err(|e| e.to_string())?;
+        let serialized = bincode::encode_to_vec(&api_key_info, bincode::config::standard())
+            .map_err(|e| e.to_string())?;
+        keys_tree.insert(key_id.as_bytes(), serialized.as_slice())
+            .map_err(|e| e.to_string())?;
 
-        // Update the index
-        {
-            let mut index = self.key_index.write().await;
-            index.insert(key_hash, key_id.clone());
-        }
+        // Update the hash index
+        let hashes_tree = self.db.open_tree("hashes").map_err(|e| e.to_string())?;
+        hashes_tree.insert(key_hash.as_bytes(), key_id.as_bytes())
+            .map_err(|e| e.to_string())?;
 
         info!(
             key_id = %key_id,
@@ -165,71 +169,118 @@ impl ApiKeyManager {
 
     /// Validate an API key and return the key info
     pub async fn validate_api_key(&self, api_key: &str) -> Option<ApiKey> {
-        let key_hash = format!("{:x}", sha256::digest(api_key.as_bytes()));
+        let key_hash = sha256::digest(api_key.as_bytes());
         
-        // Look up the key ID
-        let key_id = {
-            let index = self.key_index.read().await;
-            index.get(&key_hash).cloned()
-        }?;
+        // Look up the key ID from hash index
+        let hashes_tree = self.db.open_tree("hashes").map_err(|_| None).ok()?;
+        let key_id_bytes = match hashes_tree.get(key_hash.as_bytes()).map_err(|_| None).ok()? {
+            Some(id) => id,
+            None => return None,
+        };
+        let key_id = String::from_utf8(key_id_bytes.to_vec()).ok()?;
 
-        // Get the key info
-        let mut key_info = {
-            let keys = self.keys.read().await;
-            keys.get(&key_id).cloned()
-        }?;
+        // Get the key info from keys tree
+        let keys_tree = self.db.open_tree("keys").map_err(|_| None).ok()?;
+        let serialized = match keys_tree.get(key_id.as_bytes()).map_err(|_| None).ok()? {
+            Some(data) => data,
+            None => return None,
+        };
 
+        let (key_info,): (ApiKey,) = bincode::decode_from_slice(&serialized, bincode::config::standard())
+            .map_err(|_| None).ok()?;
+        
         // Check if key is active
         if !key_info.active {
             return None;
         }
 
         // Update last used timestamp
+        let mut updated_key = key_info.clone();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
         
-        key_info.last_used = Some(now);
+        updated_key.last_used = Some(now);
 
         // Update in storage
-        {
-            let mut keys = self.keys.write().await;
-            keys.insert(key_id, key_info.clone());
+        let serialized_updated = bincode::encode_to_vec(&updated_key, bincode::config::standard())
+            .map_err(|_| None).ok()?;
+        if keys_tree.insert(key_id.as_bytes(), serialized_updated.as_slice()).is_err() {
+            return None;
         }
 
         debug!(
-            key_id = %key_info.id,
-            client_name = %key_info.client_name,
+            key_id = %updated_key.id,
+            client_name = %updated_key.client_name,
             "API key validated successfully"
         );
 
-        Some(key_info)
+        Some(updated_key)
     }
 
     /// List all API keys (without sensitive data)
     pub async fn list_api_keys(&self) -> Vec<ApiKeyInfo> {
-        let keys = self.keys.read().await;
-        keys.values()
-            .map(|key| ApiKeyInfo {
-                id: key.id.clone(),
-                client_name: key.client_name.clone(),
-                created_at: key.created_at,
-                last_used: key.last_used,
-                rate_limit_tier: key.rate_limit_tier.clone(),
-                max_requests_per_minute: key.max_requests_per_minute,
-                active: key.active,
-                description: key.description.clone(),
-            })
-            .collect()
+        let keys_tree = self.db.open_tree("keys").map_err(|e| {
+            error!("Failed to open keys tree: {}", e);
+            return vec![];
+        })?;
+
+        let mut api_keys = vec![];
+        for entry in keys_tree.iter().map(|res| res.map_err(|e| error!("DB error: {}", e))) {
+            if let Ok((_, value)) = entry {
+                let (key_info,): (ApiKey,) = match bincode::decode_from_slice(&value, bincode::config::standard()) {
+                    Ok(decoded) => decoded,
+                    Err(e) => {
+                        error!("Failed to deserialize ApiKey: {}", e);
+                        continue;
+                    }
+                };
+                api_keys.push(ApiKeyInfo {
+                    id: key_info.id.clone(),
+                    client_name: key_info.client_name.clone(),
+                    created_at: key_info.created_at,
+                    last_used: key_info.last_used,
+                    rate_limit_tier: key_info.rate_limit_tier.clone(),
+                    max_requests_per_minute: key_info.max_requests_per_minute,
+                    active: key_info.active,
+                    description: key_info.description.clone(),
+                });
+            }
+        }
+        api_keys
     }
 
     /// Revoke an API key
     pub async fn revoke_api_key(&self, key_id: &str) -> bool {
-        let mut keys = self.keys.write().await;
-        if let Some(mut key) = keys.get(key_id).cloned() {
-            key.active = false;
-            keys.insert(key_id.to_string(), key);
+        let keys_tree = self.db.open_tree("keys").map_err(|e| {
+            error!("Failed to open keys tree: {}", e);
+            false
+        })?;
+
+        let serialized = match keys_tree.get(key_id.as_bytes()) {
+            Ok(Some(data)) => data,
+            _ => return false,
+        };
+
+        let (mut key_info,): (ApiKey,) = match bincode::decode_from_slice(&serialized, bincode::config::standard()) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                error!("Failed to deserialize ApiKey for revocation: {}", e);
+                return false;
+            }
+        };
+
+        key_info.active = false;
+
+        let serialized_updated = bincode::encode_to_vec(&key_info, bincode::config::standard())
+            .map_err(|e| {
+                error!("Failed to serialize updated ApiKey: {}", e);
+                false
+            }).unwrap_or_default();
+
+        if keys_tree.insert(key_id.as_bytes(), serialized_updated.as_slice()).is_ok() {
+            // Optionally remove from hashes, but keep for invalidation
             info!(key_id = %key_id, "API key revoked");
             true
         } else {
@@ -347,19 +398,21 @@ pub fn create_api_key_router() -> Router<Arc<ApiKeyManager>> {
         .route("/revoke", post(revoke_api_key))
 }
 
-/// Simple SHA-256 implementation for API key hashing
+/// SHA-256 implementation for API key hashing using sha2 crate
 mod sha256 {
     use std::fmt::Write;
+    use sha2::{Sha256, Digest};
 
     pub fn digest(data: &[u8]) -> String {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        let hash = hasher.finish();
-        
-        format!("{:016x}{:016x}", hash, hash.wrapping_mul(0x9e3779b97f4a7c15))
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        let result = hasher.finalize();
+
+        let mut hex_hash = String::with_capacity(64);
+        for byte in result.iter() {
+            write!(hex_hash, "{:02x}", byte).unwrap();
+        }
+        hex_hash
     }
 }
 

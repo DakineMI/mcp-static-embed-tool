@@ -1,118 +1,85 @@
 # Authentication
 
-This document explains the current token validation implementation for the Static Embedding Tool server and what you need to do to achieve full validation including all claims (audience, expiration, issued at, subject).
+This document explains the API key authentication implementation for the Static Embedding Tool server, designed for OpenAI compatibility.
 
 ## How authentication works
 
 1. **Middleware integration**
    - Axum middleware for HTTP embedding endpoints
-   - Proper 401 responses with WWW-Authenticate headers
+   - Proper 401 responses with error details
    - Health and metadata endpoints bypass authentication
 
-2. **JWE Token header validation**
-   - Validates the 5-part structure (header.encrypted_key.iv.ciphertext.tag)
-   - Checks algorithm (`dir`), encryption (`A256GCM`), and issuer
-   - Validates the header structure and issuer against configured values
+2. **API Key Validation**
+   - Extracts API key from Authorization header (Bearer <api_key> or direct embed- prefix)
+   - Validates against stored hashed keys in SQLite database
+   - Updates last_used timestamp on successful validation
+   - Supports self-registration for new API keys
+   - Enforces per-key rate limiting
 
-3. **JWT Token full validation**
-   - Validates 3-part structure (header.payload.signature)
-   - Validates issuer, audience, expiration, and issued at claims
-   - Supports RSA and EC algorithms
+3. **OpenAI Compatibility**
+   - Uses standard Authorization: Bearer <api_key> header
+   - API endpoints match OpenAI embedding API structure
+   - Returns standard error formats for invalid/missing keys
 
-4. **JWE Token full validation**
-   - We can only validate the header structure without the decryption key
-   - The actual claims (audience, expiration, issued at, subject) are encrypted
-   - When a decryption key is provided we decrypt the token and validate the claims
-   - Full validation requires the decryption key from the authentication provider
-   
-## How to perform full token validation
+## API Key Management
 
-1. **JWE Token Validation**
+### Self-Registration
+Clients can register for an API key via the `/api/register` endpoint:
 
-JWE tokens are validated by checking the header structure and issuer. The server validates that the token uses the expected algorithm ("dir") and encryption method ("A256GCM") and that the issuer matches the expected value.
+**Request:**
+```json
+POST /api/register
+Content-Type: application/json
+
+{
+  "client_name": "My Application",
+  "description": "Description of your application",
+  "email": "contact@example.com"
+}
+```
+
+**Response:**
+```json
+{
+  "api_key": "embed-ABC123def456GHI789jkl012MNO345pqr678STU901vwx234YZA567bcd890efGHI",
+  "key_info": {
+    "id": "uuid-here",
+    "client_name": "My Application",
+    "created_at": 1699123456,
+    "last_used": null,
+    "rate_limit_tier": "standard",
+    "max_requests_per_minute": 1000,
+    "active": true,
+    "description": "Description of your application"
+  }
+}
+```
+
+**Note:** The full API key is only returned once during registration. Store it securely.
+
+### Listing API Keys
+Authenticated users can list their API keys:
+
+```bash
+curl -H "Authorization: Bearer <your-api-key>" http://localhost:8080/api/list
+```
+
+### Revoking API Keys
+Revoke a specific API key:
+
+```json
+POST /api/revoke
+Content-Type: application/json
+Authorization: Bearer <your-api-key>
+
+{
+  "key_id": "uuid-to-revoke"
+}
+```
 
 ## Configuration options
 
-The Static Embedding Tool server supports various authentication configuration options that can be specified via command-line arguments, configuration files, or environment variables:
-
-### Server URL
-
-Specify the local server URL for authentication callback:
-
-- **CLI argument**: `--server-url`
-- **Environment Variable**: `EMBED_TOOL_SERVER_URL`
-- **Config file**: `server.url`
-- **Default**: `http://localhost:8080`
-
-**Example:**
-```bash
-# Command-line
-embed-tool server start --server-url "http://localhost:8080"
-
-# Environment variable
-export EMBED_TOOL_SERVER_URL="http://localhost:8080"
-embed-tool server start
-```
-
-### Authentication server
-
-Specify the authentication server URL for JWKS endpoint:
-
-- **CLI argument**: `--auth-server`
-- **Environment Variable**: `EMBED_TOOL_AUTH_SERVER`
-- **Config file**: `auth.server_url`
-- **Default**: `https://auth.example.com`
-
-**Example:**
-
-```bash
-# Command-line
-embed-tool server start --auth-server "https://auth.example.com"
-
-# Environment variable
-export EMBED_TOOL_AUTH_SERVER="https://auth.example.com"
-embed-tool server start
-```
-
-### Authentication audience
-
-Specify the audience for embedding API authentication tokens:
-
-- **CLI argument**: `--auth-audience`
-- **Environment Variable**: `EMBED_TOOL_AUTH_AUDIENCE`
-- **Config file**: `auth.audience`
-- **Default**: `https://embed.example.com`
-- **Default**: `embedding-api`
-
-**Example:**
-
-```bash
-# Command-line
-embed-tool server start --auth-audience "embedding-api"
-
-# Environment variable
-export EMBED_TOOL_AUTH_AUDIENCE="embedding-api"
-embed-tool server start
-```
-
-### JWKS URL
-
-Specify the JSON Web Key Set endpoint for token validation:
-
-- **CLI argument**: `--jwks-url`
-- **Environment Variable**: `EMBED_TOOL_JWKS_URL`
-- **Config file**: `auth.jwks_url`
-
-**Example:**
-
-```bash
-# Command-line
-embed-tool server start --jwks-url "https://auth.example.com/.well-known/jwks.json"
-
-# Environment variable  
-export EMBED_TOOL_JWKS_URL="https://auth.example.com/.well-known/jwks.json"
-embed-tool server start
-```
+The Static Embedding Tool server supports authentication configuration via command-line arguments, configuration files, or environment variables:
 
 ### Disabling authentication
 
@@ -124,7 +91,6 @@ To disable authentication completely (useful for development):
 - **Default**: `false`
 
 **Example:**
-
 ```bash
 # Command-line
 embed-tool server start --auth-disabled
@@ -134,52 +100,105 @@ export EMBED_TOOL_AUTH_DISABLED=true
 embed-tool server start
 ```
 
-### Complete configuration example
+**Note:** When authentication is disabled, the server accepts all requests without validation. Use only for local development, never in production.
 
-Here's an example of using multiple authentication options together:
+### Rate Limiting
+
+API keys have built-in rate limiting based on tier:
+
+- **Development/Test**: 100 requests/minute
+- **Standard**: 1000 requests/minute  
+- **Premium/Enterprise**: 5000 requests/minute
+
+Global rate limiting can be configured:
+
+- **CLI argument**: `--rate-limit-rps` (requests per second), `--rate-limit-burst`
+- **Environment Variable**: `EMBED_TOOL_RATE_LIMIT_RPS`, `EMBED_TOOL_RATE_LIMIT_BURST`
+- **Default**: 100 RPS, 200 burst
+
+### Complete configuration example
 
 ```bash
 # Using command-line arguments
 embed-tool server start \
   --server-url "http://localhost:8080" \
-  --auth-server "https://auth.example.com" \
-  --auth-audience "embedding-api" \
-  --jwks-url "https://auth.example.com/.well-known/jwks.json"
+  --auth-disabled=false \
+  --rate-limit-rps 100 \
+  --rate-limit-burst 200
 
 # Using environment variables
 export EMBED_TOOL_SERVER_URL="http://localhost:8080"
-export EMBED_TOOL_AUTH_SERVER="https://auth.example.com"
-export EMBED_TOOL_AUTH_AUDIENCE="embedding-api"
-export EMBED_TOOL_JWKS_URL="https://auth.example.com/.well-known/jwks.json"
+export EMBED_TOOL_AUTH_DISABLED=false
+export EMBED_TOOL_RATE_LIMIT_RPS=100
+export EMBED_TOOL_RATE_LIMIT_BURST=200
 embed-tool server start
 ```
 
-**Note:** When authentication is disabled (`--auth-disabled` or `EMBED_TOOL_AUTH_DISABLED=true`), the server will not validate any tokens and will accept all requests. This is useful for local development but should never be used in production.
-
 ## Security considerations
 
-1. **Token validation**
-   - All embedding endpoints validate bearer tokens when authentication is enabled
-   - Health check and metadata endpoints bypass authentication
-   - Invalid or missing tokens return 401 Unauthorized
+1. **API Key Security**
+   - Store API keys securely (never in client-side code)
+   - Use HTTPS for all API requests
+   - Rotate keys regularly and revoke compromised keys
+   - API keys are hashed with SHA-256 before storage
 
-2. **JWKS endpoint security**
-   - Ensure JWKS endpoint is accessible and secure
-   - Consider implementing JWKS caching and rotation
-   - Monitor JWKS endpoint availability
+2. **Rate Limiting**
+   - Per-API-key rate limiting prevents abuse
+   - Global rate limiting protects against DDoS
+   - Monitor usage patterns for anomalies
 
-3. **Audience validation**
-   - Ensure the audience matches your embedding API's expected audience
-   - Prevents token reuse across different services
-   - Configure audience consistently across all clients
+3. **Database Security**
+   - API keys stored in SQLite (`data/api_keys.db`)
+   - Database file should have restricted permissions
+   - Consider encrypting the database for production
 
-4. **Rate limiting integration**
-   - Authentication works alongside IP-based rate limiting
-   - Consider implementing per-token rate limiting for production
-   - Monitor authentication failures and potential abuse
+4. **Production Deployment**
+   - Always enable authentication in production
+   - Use environment-specific API keys
+   - Implement proper logging and monitoring
+   - Backup the API keys database regularly
+   - Consider migrating to a managed secrets service for enterprise deployments
 
-5. **Production deployment**
-   - Always enable authentication in production environments
-   - Use strong, unique audiences for different deployments
-   - Implement proper logging and monitoring for authentication events
-   - Consider implementing token refresh mechanisms
+5. **OpenAI Client Compatibility**
+   - Use `openai` Python client with custom base URL:
+     ```python
+     from openai import OpenAI
+     
+     client = OpenAI(
+         api_key="embed-your-key-here",
+         base_url="http://localhost:8080/v1"
+     )
+     
+     response = client.embeddings.create(
+         input="Your text here",
+         model="text-embedding-ada-002"
+     )
+     ```
+   - JavaScript/Node.js: Use `openai` npm package with baseURL option
+   - The server returns OpenAI-compatible JSON responses
+
+## Error Responses
+
+Invalid or missing API keys return standard OpenAI-style errors:
+
+```json
+{
+  "error": {
+    "message": "Invalid or missing API key. Include your API key in the Authorization header as 'Bearer <your-api-key>'.",
+    "type": "authentication_error",
+    "code": "invalid_api_key",
+    "param": null,
+    "status": 401
+  }
+}
+```
+
+## Troubleshooting
+
+1. **401 Unauthorized**: Check that your API key is correct and active. Verify the Authorization header format.
+
+2. **Rate limit exceeded**: Your API key has exceeded its request limit. Wait and retry, or request a higher tier.
+
+3. **Database errors**: Ensure the `data/` directory is writable and the SQLite database isn't corrupted.
+
+4. **Self-registration issues**: The `/api/register` endpoint has no rate limiting. Consider adding CAPTCHA or manual approval for production.

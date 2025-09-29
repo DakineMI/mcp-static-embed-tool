@@ -17,11 +17,11 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{debug, error, info, warn};
 
 use crate::logs::init_logging_and_metrics;
-use crate::server::api::{AppState, create_api_router};
+use crate::server::api::create_api_router;
+use crate::server::state::AppState;
 use crate::server::api_keys::{ApiKeyManager, api_key_auth_middleware, create_api_key_router};
-use crate::server::auth::{TokenValidationConfig, require_bearer_auth};
 use crate::server::http::health;
-use crate::server::limit::create_rate_limit_layer;
+use crate::server::limit::{create_rate_limit_layer, api_key_rate_limit_middleware, ApiKeyRateLimiter};
 use crate::tools::EmbeddingService;
 use crate::utils::{format_duration, generate_connection_id};
 
@@ -343,11 +343,11 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     // Create a session manager for the HTTP server
     let session_manager = Arc::new(LocalSessionManager::default());
     
-    // Initialize API key manager
-    let api_key_manager = Arc::new(ApiKeyManager::new());
+    // Initialize API key manager with persistent storage
+    let api_key_manager = Arc::new(ApiKeyManager::new("./data/api_keys.db")?);
     
     // Create shared app state with loaded models
-    let app_state = Arc::new(AppState::new().map_err(|e| anyhow!("Failed to initialize models: {}", e))?);
+    let app_state = Arc::new(AppState::new().await.map_err(|e| anyhow!("Failed to initialize models: {}", e))?);
     
     // Create a new EmbeddingService instance for the MCP server
     let mcp_service = StreamableHttpService::new(
@@ -363,13 +363,25 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     
     // Create the OpenAI-compatible API router
     let api_router = create_api_router().with_state(Arc::clone(&app_state));
-    
+
+    // Create API key rate limiter
+    let rate_limiter = Arc::new(ApiKeyRateLimiter::new());
+
+    // Protect API router with auth and per-key rate limiting
+    let protected_api_router = if !auth_disabled {
+        api_router
+            .layer(axum::Extension(api_key_manager.clone()))
+            .layer(axum::Extension(rate_limiter))
+            .layer(axum::middleware::from_fn(api_key_rate_limit_middleware))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware))
+    } else {
+        api_router
+    };
+
     // Create the API key management router
     let api_key_router = create_api_key_router()
         .with_state(api_key_manager.clone())
         .layer(axum::Extension(api_key_manager.clone()));
-    // Create rate limiting layer with metrics
-    let rate_limit_layer = create_rate_limit_layer(rate_limit_rps, rate_limit_burst);
     // Create tracing layer for request logging
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(|request: &axum::http::Request<_>| {
@@ -410,25 +422,11 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     let mut router = Router::new()
         .nest_service("/.well-known", well_known_service)
         .nest_service("/v1/mcp", mcp_service)  // Moved MCP to /v1/mcp
-        .merge(api_router.layer(api_key_auth_middleware(api_key_manager.clone())))  // Add API key auth to API routes
+        .merge(protected_api_router)  // Add protected API routes
         .merge(api_key_router)                 // Add API key management routes (no auth required)
         .route("/health", get(health))
-        .layer(trace_layer)
-        .layer(rate_limit_layer);
+        .layer(trace_layer);
 
-    // Add bearer authentication middleware if specified
-    if !auth_disabled {
-        // Set the token validation config
-        let token_config = TokenValidationConfig {
-            expected_audience: auth_audience.clone(),
-            ..Default::default()
-        };
-        // Add bearer authentication middleware
-        router = router.layer(axum::middleware::from_fn(move |req, next| {
-            let config = token_config.clone();
-            require_bearer_auth(config, req, next)
-        }));
-    }
     
     // Log available endpoints
     info!("🚀 Server started on http://{}", bind_address);
@@ -440,12 +438,7 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     info!("  DELETE /api/keys/:id    - Revoke API key (API key required)");
     info!("  *    /v1/mcp            - MCP protocol endpoint");
     info!("  GET  /health            - Health check");
-    info!("🔑 API Key Authentication: ENABLED");
-    if !auth_disabled {
-        info!("🔒 Bearer Authentication (fallback): ENABLED");
-    } else {
-        info!("🔓 Bearer Authentication (fallback): DISABLED");
-    }
+    info!("🔑 API Key Authentication: {}", if auth_disabled { "DISABLED" } else { "ENABLED" });
     
     // Use the shared double ctrl-c handler
     let signal = handle_double_ctrl_c();

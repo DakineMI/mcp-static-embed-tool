@@ -1,0 +1,10 @@
+# Git-Crypt + 1Password Integration
+# Add these to your ~/.gitconfig or run as commands
+
+# Set up git aliases for easy access
+git config --global alias.unlock-specstory '!op document get "specstory-encryption-key" --vault="Personal" | git-crypt unlock /dev/stdin'
+git config --global alias.lock-specstory 'git-crypt lock'
+
+# Usage after setup:
+# git unlock-specstory  # Unlocks using 1Password
+# git lock-specstory    # Locks the repository

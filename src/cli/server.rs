@@ -1,4 +1,6 @@
 use crate::cli::{ServerAction, StartArgs};
+use crate::server::start::{start_server, ServerConfig};
+use anyhow::{anyhow, Result as AnyhowResult};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::fs;
@@ -7,7 +9,7 @@ use sysinfo::{System, Pid};
 pub async fn handle_server_command(
     action: ServerAction,
     config_path: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AnyhowResult<()> {
     match action {
         ServerAction::Start(args) => start_server(args, config_path).await,
         ServerAction::Stop => stop_server().await,
@@ -26,7 +28,27 @@ pub async fn handle_server_command(
 async fn start_server(
     args: StartArgs,
     _config_path: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AnyhowResult<()> {
+    // Validate models
+    if let Some(models_str) = &args.models {
+        let model_list: Vec<&str> = models_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if model_list.is_empty() {
+            return Err(anyhow!("No valid models specified in --models"));
+        }
+        let default = args.default_model.trim();
+        if !model_list.contains(&default) {
+            return Err(anyhow!(
+                "Default model '{}' must be one of the specified models: {}",
+                default,
+                models_str
+            ));
+        }
+    }
+
     // Check if server is already running
     if is_server_running().await? {
         eprintln!("Server is already running. Use 'embed-tool server stop' first or 'embed-tool server restart'.");
@@ -40,7 +62,7 @@ async fn start_server(
     }
 }
 
-async fn start_foreground(args: StartArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
     println!("Starting embedding server in foreground mode...");
     println!("Port: {}", args.port);
     println!("Bind: {}", args.bind);
@@ -54,8 +76,50 @@ async fn start_foreground(args: StartArgs) -> Result<(), Box<dyn std::error::Err
         println!("MCP mode: enabled");
     }
 
-    // Start the actual server - this would call the server code
-    crate::server::start_embedding_server(args).await
+    if args.auth_disabled {
+        println!("Authentication: disabled");
+    }
+
+    let config = if let Some(socket_path) = args.socket_path {
+        ServerConfig {
+            endpoint: None,
+            ns: None,
+            db: None,
+            user: None,
+            pass: None,
+            server_url: format!("unix://{}", socket_path.display()),
+            bind_address: None,
+            socket_path: Some(socket_path.to_string_lossy().into_owned()),
+            auth_disabled: args.auth_disabled,
+            rate_limit_rps: 100,
+            rate_limit_burst: 200,
+            auth_server: "https://auth.example.com".to_string(),
+            auth_audience: "embed-tool".to_string(),
+            cloud_access_token: None,
+            cloud_refresh_token: None,
+        }
+    } else {
+        let addr = format!("{}:{}", args.bind, args.port);
+        ServerConfig {
+            endpoint: None,
+            ns: None,
+            db: None,
+            user: None,
+            pass: None,
+            server_url: format!("http://{}", addr),
+            bind_address: Some(addr),
+            socket_path: None,
+            auth_disabled: args.auth_disabled,
+            rate_limit_rps: 100,
+            rate_limit_burst: 200,
+            auth_server: "https://auth.example.com".to_string(),
+            auth_audience: "embed-tool".to_string(),
+            cloud_access_token: None,
+            cloud_refresh_token: None,
+        }
+    };
+
+    start_server(config).await
 }
 
 async fn start_daemon(args: StartArgs) -> Result<(), Box<dyn std::error::Error>> {

@@ -7,7 +7,8 @@ use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 
-use crate::server::{AppState, embeddings_handler};
+use crate::server::state::AppState;
+use crate::server::embeddings_handler;
 use crate::server::limit::create_rate_limit_layer;
 
 /// Start the embedding HTTP server

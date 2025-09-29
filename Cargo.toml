@@ -8,6 +8,7 @@ anyhow = { version = "1.0.100", features = ["backtrace"] }
 axum = { version = "0.8.4", features = ["ws"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 base64 = "0.22.1"
+bincode = "2.0"
 clap = { version = "4.5.48", features = ["cargo", "derive", "env", "string", "wrap_help", "debug", "deprecated"] }
 colorized = "1.0.0"
 crossbeam = { version = "0.8.4", features = ["nightly", "crossbeam-queue", "crossbeam-deque", "crossbeam-channel"] }
@@ -23,6 +24,7 @@ ring = "0.17.14"
 rmcp = { version = "0.6.4", features = ["server", "macros", "transport-streamable-http-server", "transport-worker", "transport-sse-server", "transport-io"] }
 rustls = "0.23.32"
 schemars = "1.0.4"
+sled = "0.34"
 serde = { version = "1.0.226", features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["unbounded_depth", "preserve_order"] }
 thiserror = "2.0.16"
