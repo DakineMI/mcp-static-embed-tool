@@ -1,7 +1,6 @@
-use anyhow::{anyhow, Result};
+use crate::server::errors::AppError;
 use futures::future::join_all;
 use model2vec_rs::model::StaticModel;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

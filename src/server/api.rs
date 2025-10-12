@@ -5,7 +5,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use anyhow::Result;
 use model2vec_rs::model::StaticModel;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -13,13 +12,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 
-/// Shared application state containing loaded models
-#[derive(Clone)]
-pub struct AppState {
-    pub models: HashMap<String, StaticModel>,
-    pub default_model: String,
-    pub startup_time: SystemTime,
-}
+use crate::server::errors::AppError;
 
 use super::state::AppState;
 

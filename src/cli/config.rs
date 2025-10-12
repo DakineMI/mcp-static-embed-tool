@@ -23,9 +23,8 @@ struct ServerConfig {
 
 #[derive(Serialize, Deserialize)]
 struct AuthConfig {
-    jwks_url: Option<String>,
-    audience: Option<String>,
-    enable_auth: bool,
+    require_api_key: bool,
+    registration_enabled: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,9 +57,8 @@ impl Default for ServerConfig {
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
-            jwks_url: None,
-            audience: None,
-            enable_auth: false,
+            require_api_key: true,
+            registration_enabled: true,
         }
     }
 }
@@ -159,13 +157,8 @@ async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::er
     println!("rate_limit_burst = {}", config.server.rate_limit_burst);
     
     println!("\n[auth]");
-    println!("enable_auth = {}", config.auth.enable_auth);
-    if let Some(jwks_url) = &config.auth.jwks_url {
-        println!("jwks_url = \"{}\"", jwks_url);
-    }
-    if let Some(audience) = &config.auth.audience {
-        println!("audience = \"{}\"", audience);
-    }
+    println!("require_api_key = {}", config.auth.require_api_key);
+    println!("registration_enabled = {}", config.auth.registration_enabled);
     
     println!("\n[models]");
     if let Some(models_dir) = &config.models.models_dir {
@@ -190,7 +183,7 @@ async fn set_config(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(config_path.clone()).unwrap_or_default();
     
-    // Parse the key path (e.g., "server.default_port" or "auth.jwks_url")
+    // Parse the key path (e.g., "server.default_port" or "auth.require_api_key")
     let parts: Vec<&str> = args.key.split('.').collect();
     let value = args.value.clone(); // Clone to avoid move issues
     
@@ -213,14 +206,11 @@ async fn set_config(
         ["server", "rate_limit_burst"] => {
             config.server.rate_limit_burst = value.parse()?;
         }
-        ["auth", "enable_auth"] => {
-            config.auth.enable_auth = value.parse()?;
+        ["auth", "require_api_key"] => {
+            config.auth.require_api_key = value.parse()?;
         }
-        ["auth", "jwks_url"] => {
-            config.auth.jwks_url = Some(value);
-        }
-        ["auth", "audience"] => {
-            config.auth.audience = Some(value);
+        ["auth", "registration_enabled"] => {
+            config.auth.registration_enabled = value.parse()?;
         }
         ["models", "models_dir"] => {
             config.models.models_dir = Some(value);
@@ -250,7 +240,7 @@ async fn set_config(
             eprintln!("Available keys:");
             eprintln!("  server.default_port, server.default_bind, server.default_model");
             eprintln!("  server.enable_mcp, server.rate_limit_rps, server.rate_limit_burst");
-            eprintln!("  auth.enable_auth, auth.jwks_url, auth.audience");
+            eprintln!("  auth.require_api_key, auth.registration_enabled");
             eprintln!("  models.models_dir, models.auto_download, models.default_distill_dims");
             eprintln!("  logging.level, logging.file, logging.json_format");
             return Ok(());

@@ -269,7 +269,7 @@ Examples:
                         duration_ms = duration.as_millis(),
                         error = %e,
                         "Failed to generate embedding for input at index {}"
-                    );
+                    , idx);
                     
                     counter!("embedtool.errors.batch_embed").increment(1);
                     
@@ -489,7 +489,7 @@ Examples:
             "Starting model distillation process"
         );
 
-        match utils::distill(&input_model, &output_name, dims).await {
+        match utils::distill(&input_model, dims, None).await {
             Ok(output_path) => {
                 let duration = start_time.elapsed();
                 

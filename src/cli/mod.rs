@@ -98,6 +98,14 @@ pub struct StartArgs {
     /// PID file location for daemon mode
     #[arg(long)]
     pub pid_file: Option<PathBuf>,
+    
+    /// TLS certificate file path
+    #[arg(long)]
+    pub tls_cert_path: Option<String>,
+
+    /// TLS private key file path
+    #[arg(long)]
+    pub tls_key_path: Option<String>,
 }
 
 /// Validate models string: comma-separated non-empty names
@@ -205,7 +213,7 @@ pub enum ConfigAction {
 
 #[derive(Args)]
 pub struct SetConfigArgs {
-    /// Configuration key (e.g., auth.jwks_url)
+    /// Configuration key (e.g., auth.require_api_key)
     pub key: String,
     
     /// Configuration value

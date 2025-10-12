@@ -15,9 +15,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
 use tracing::{debug, info, warn, error};
 use uuid::Uuid;
+
+use crate::server::errors::AppError;
+use crate::server::api::{ApiError, ErrorDetails};
 // No top-level use for sha2 needed, as it's used internally in mod sha256
 use rand::Rng;
 
@@ -390,12 +392,20 @@ pub async fn revoke_api_key(
     }
 }
 
-/// Create API key management router
-pub fn create_api_key_router() -> Router<Arc<ApiKeyManager>> {
+/// Create router for public API key registration when enabled
+pub fn create_registration_router(enabled: bool) -> Router<Arc<ApiKeyManager>> {
+    if enabled {
+        Router::new().route("/api/register", post(register_api_key))
+    } else {
+        Router::new()
+    }
+}
+
+/// Create router for protected API key management endpoints
+pub fn create_api_key_management_router() -> Router<Arc<ApiKeyManager>> {
     Router::new()
-        .route("/register", post(register_api_key))
-        .route("/list", get(list_api_keys))
-        .route("/revoke", post(revoke_api_key))
+        .route("/api/keys", get(list_api_keys))
+        .route("/api/keys/revoke", post(revoke_api_key))
 }
 
 /// SHA-256 implementation for API key hashing using sha2 crate
@@ -419,11 +429,17 @@ mod sha256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sled::Config;
     use tokio;
+
+    fn test_manager() -> ApiKeyManager {
+        let db = Config::new().temporary(true).open().unwrap();
+        ApiKeyManager { db }
+    }
 
     #[tokio::test]
     async fn test_api_key_generation_and_validation() {
-        let manager = ApiKeyManager::new();
+        let manager = test_manager();
         
         let request = ApiKeyRequest {
             client_name: "test-client".to_string(),
@@ -448,14 +464,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_api_key() {
-        let manager = ApiKeyManager::new();
+        let manager = test_manager();
         let result = manager.validate_api_key("invalid-key").await;
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_api_key_revocation() {
-        let manager = ApiKeyManager::new();
+        let manager = test_manager();
         
         let request = ApiKeyRequest {
             client_name: "test-client".to_string(),
@@ -467,7 +483,7 @@ mod tests {
         let key_id = response.key_info.id.clone();
 
         // Revoke the key
-        assert!(manager.revoke_api_key(&key_id).await);
+    assert!(manager.revoke_api_key(&key_id).await);
 
         // Validation should fail
         let result = manager.validate_api_key(&response.api_key).await;

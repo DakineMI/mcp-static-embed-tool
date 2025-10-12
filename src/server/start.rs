@@ -1,11 +1,10 @@
-use anyhow::{Result, anyhow};
-use axum::{Json, Router, routing::get};
+use crate::server::errors::AppError;
+use axum::{Router, routing::get, serve::Serve};
 use metrics::{counter, gauge};
 use rmcp::transport::{
     StreamableHttpServerConfig,
     streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
 };
-use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,36 +12,43 @@ use std::time::{Duration, Instant};
 use tokio::fs;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::signal;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
+
+use std::fs;
+use std::sync::Arc;
+use rustls_pemfile::{certs, pkcs8_private_keys};
+use tokio_rustls::{TlsAcceptor, rustls::ServerConfig as RustlsServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio::net::TcpListener;
 
 use crate::logs::init_logging_and_metrics;
 use crate::server::api::create_api_router;
+use crate::server::api_keys::{
+    ApiKeyManager,
+    api_key_auth_middleware,
+    create_api_key_management_router,
+    create_registration_router,
+};
 use crate::server::state::AppState;
-use crate::server::api_keys::{ApiKeyManager, api_key_auth_middleware, create_api_key_router};
 use crate::server::http::health;
-use crate::server::limit::{create_rate_limit_layer, api_key_rate_limit_middleware, ApiKeyRateLimiter};
+use crate::server::limit::{api_key_rate_limit_middleware, ApiKeyRateLimiter};
 use crate::tools::EmbeddingService;
 use crate::utils::{format_duration, generate_connection_id};
 
 /// Configuration for server startup
 #[derive(Clone)]
 pub struct ServerConfig {
-    pub endpoint: Option<String>,
-    pub ns: Option<String>,
-    pub db: Option<String>,
-    pub user: Option<String>,
-    pub pass: Option<String>,
     pub server_url: String,
     pub bind_address: Option<String>,
     pub socket_path: Option<String>,
     pub auth_disabled: bool,
+    pub registration_enabled: bool,
     pub rate_limit_rps: u32,
     pub rate_limit_burst: u32,
-    pub auth_server: String,
-    pub auth_audience: String,
-    pub cloud_access_token: Option<String>,
-    pub cloud_refresh_token: Option<String>,
+    pub api_key_db_path: String,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
 }
 
 // Global metrics
@@ -80,18 +86,15 @@ async fn handle_double_ctrl_c() {
 pub async fn start_server(config: ServerConfig) -> Result<()> {
     // Output debugging information
     info!(
-        endpoint = config.endpoint.as_deref(),
-        namespace = config.ns.as_deref(),
-        database = config.db.as_deref(),
-        username = config.user.as_deref(),
         server_url = config.server_url,
         bind_address = config.bind_address.as_deref().unwrap_or("N/A"),
         socket_path = config.socket_path.as_deref().unwrap_or("N/A"),
         auth_disabled = config.auth_disabled,
+        registration_enabled = config.registration_enabled,
         rate_limit_rps = config.rate_limit_rps,
         rate_limit_burst = config.rate_limit_burst,
-        auth_server = config.auth_server,
-        auth_audience = config.auth_audience,
+        api_key_db_path = config.api_key_db_path,
+        tls_enabled = config.tls_cert_path.is_some(),
         "Server configuration loaded"
     );
     match (config.bind_address.is_some(), config.socket_path.is_some()) {
@@ -108,19 +111,36 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
     }
 }
 
+// Helper function to create TLS acceptor
+async fn create_tls_acceptor(
+    cert_path: &str,
+    key_path: &str,
+) -> Result<TlsAcceptor> {
+    let cert_file = fs::read(cert_path)
+        .map_err(|e| anyhow!("Failed to read certificate file {}: {}", cert_path, e))?;
+    let key_file = fs::read(key_path)
+        .map_err(|e| anyhow!("Failed to read private key file {}: {}", key_path, e))?;
+
+    let certs = certs(&mut cert_file.as_slice())
+        .map_err(|e| anyhow!("Failed to parse certificates: {}", e))?
+        .into_iter()
+        .map(|cert| CertificateDer::X509(cert.to_vec().into()))
+        .collect::<Vec<_>>();
+
+    let mut keys = pkcs8_private_keys(&mut key_file.as_slice())
+        .map_err(|e| anyhow!("Failed to parse private keys: {}", e))?;
+    let key = PrivateKeyDer::Pkcs8(keys.remove(0).secret_pkcs8().to_vec().into());
+
+    let config = RustlsServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|err| anyhow!("Failed to build TLS config: {}", err))?;
+
+    Ok(TlsAcceptor::from(Arc::new(config)))
+}
 /// Start the MCP server in stdio mode
-async fn start_stdio_server(config: ServerConfig) -> Result<()> {
-    // Extract configuration values
-    let ServerConfig {
-        endpoint,
-        ns,
-        db,
-        user,
-        pass,
-        cloud_access_token,
-        cloud_refresh_token,
-        ..
-    } = config;
+async fn start_stdio_server(_config: ServerConfig) -> Result<()> {
     // Initialize structured logging and metrics
     init_logging_and_metrics(true);
     // Output debugging information
@@ -168,20 +188,11 @@ async fn start_stdio_server(config: ServerConfig) -> Result<()> {
 
 /// Start the MCP server in Unix socket mode
 async fn start_unix_server(config: ServerConfig) -> Result<()> {
-    // Extract configuration values
-    let ServerConfig {
-        endpoint,
-        ns,
-        db,
-        user,
-        pass,
-        socket_path,
-        cloud_access_token,
-        cloud_refresh_token,
-        ..
-    } = config;
     // Get the specified socket path
-    let socket_path = socket_path.as_deref().unwrap();
+    let socket_path = config
+        .socket_path
+        .as_deref()
+        .expect("socket_path must be provided for unix mode");
     // Initialize structured logging and metrics
     init_logging_and_metrics(false);
     // Get the specified socket path
@@ -227,14 +238,6 @@ async fn start_unix_server(config: ServerConfig) -> Result<()> {
             total_connections,
             "Connection metrics updated"
         );
-        // Clone configuration values for this connection
-        let endpoint = endpoint.clone();
-        let namespace = ns.clone();
-        let database = db.clone();
-        let user = user.clone();
-        let pass = pass.clone();
-        let cloud_access_token = cloud_access_token.clone();
-        let cloud_refresh_token = cloud_refresh_token.clone();
         // Spawn a new async task to handle this client connection
         tokio::spawn(async move {
             let _span =
@@ -283,20 +286,15 @@ async fn start_unix_server(config: ServerConfig) -> Result<()> {
 async fn start_http_server(config: ServerConfig) -> Result<()> {
     // Extract configuration values
     let ServerConfig {
-        endpoint,
-        ns,
-        db,
-        user,
-        pass,
         server_url,
         bind_address,
         auth_disabled,
+        registration_enabled,
         rate_limit_rps,
         rate_limit_burst,
-        auth_server,
-        auth_audience,
-        cloud_access_token,
-        cloud_refresh_token,
+        api_key_db_path,
+        tls_cert_path,
+        tls_key_path,
         ..
     } = config;
     // Get the specified bind address
@@ -315,36 +313,19 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     let listener = TcpListener::bind(&bind_address)
         .await
         .map_err(|e| anyhow!("Failed to bind to address {bind_address}: {e}"))?;
-    // List servers for authentication discovery
-    let protected_resource = Json(json!({
-        "resource": server_url,
-        "bearer_methods_supported": ["header"],
-        "authorization_servers": [auth_server],
-        "scopes_supported": ["openid", "profile", "email", "offline_access"],
-        "audience": [
-            "https://embed.example.com/userinfo",
-            "https://embed.example.com/api/v2/",
-            auth_audience,
-        ],
-    }));
-    // Create CORS layer for /.well-known endpoints
-    let cors_layer = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::OPTIONS])
-        .allow_headers([
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::CONTENT_TYPE,
-        ])
-        .allow_credentials(false);
-    // Create a service for /.well-known endpoints with CORS
-    let well_known_service = Router::new()
-        .route("/oauth-protected-resource", get(protected_resource))
-        .layer(cors_layer);
+
+    // Ensure API key database directory exists
+    if let Some(parent) = Path::new(&api_key_db_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).await?;
+        }
+    }
+
     // Create a session manager for the HTTP server
     let session_manager = Arc::new(LocalSessionManager::default());
     
     // Initialize API key manager with persistent storage
-    let api_key_manager = Arc::new(ApiKeyManager::new("./data/api_keys.db")?);
+    let api_key_manager = Arc::new(ApiKeyManager::new(&api_key_db_path)?);
     
     // Create shared app state with loaded models
     let app_state = Arc::new(AppState::new().await.map_err(|e| anyhow!("Failed to initialize models: {}", e))?);
@@ -371,17 +352,31 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     let protected_api_router = if !auth_disabled {
         api_router
             .layer(axum::Extension(api_key_manager.clone()))
-            .layer(axum::Extension(rate_limiter))
+            .layer(axum::Extension(Arc::clone(&rate_limiter)))
             .layer(axum::middleware::from_fn(api_key_rate_limit_middleware))
             .layer(axum::middleware::from_fn(api_key_auth_middleware))
     } else {
         api_router
     };
 
-    // Create the API key management router
-    let api_key_router = create_api_key_router()
+    // Public registration router (optional)
+    let registration_router = create_registration_router(registration_enabled)
         .with_state(api_key_manager.clone())
         .layer(axum::Extension(api_key_manager.clone()));
+
+    // Protected API key management router
+    let api_key_admin_router = {
+        let router = create_api_key_management_router().with_state(api_key_manager.clone());
+        if !auth_disabled {
+            router
+                .layer(axum::Extension(api_key_manager.clone()))
+                .layer(axum::Extension(Arc::clone(&rate_limiter)))
+                .layer(axum::middleware::from_fn(api_key_rate_limit_middleware))
+                .layer(axum::middleware::from_fn(api_key_auth_middleware))
+        } else {
+            router.layer(axum::Extension(api_key_manager.clone()))
+        }
+    };
     // Create tracing layer for request logging
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(|request: &axum::http::Request<_>| {
@@ -420,90 +415,169 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
         );
     // Create an Axum router with both API and MCP services
     let mut router = Router::new()
-        .nest_service("/.well-known", well_known_service)
-        .nest_service("/v1/mcp", mcp_service)  // Moved MCP to /v1/mcp
-        .merge(protected_api_router)  // Add protected API routes
-        .merge(api_key_router)                 // Add API key management routes (no auth required)
+        .nest_service("/v1/mcp", mcp_service)  // MCP over HTTP
+        .merge(registration_router)
+        .merge(protected_api_router)
+        .merge(api_key_admin_router)
         .route("/health", get(health))
         .layer(trace_layer);
 
     
     // Log available endpoints
-    info!("🚀 Server started on http://{}", bind_address);
+    let protocol = if tls_cert_path.is_some() { "https" } else { "http" };
+    info!("🚀 Server started on {}://{}", protocol, bind_address);
     info!("📚 Available endpoints:");
     info!("  POST /v1/embeddings     - OpenAI-compatible embedding API (API key required)");
     info!("  GET  /v1/models         - List available models (API key required)");
-    info!("  POST /api/register      - Self-register for API key");
+    if registration_enabled {
+        info!("  POST /api/register      - Self-register for API key");
+    } else {
+        info!("  POST /api/register      - Self-registration disabled");
+    }
     info!("  GET  /api/keys          - List API keys (API key required)");
-    info!("  DELETE /api/keys/:id    - Revoke API key (API key required)");
+    info!("  POST /api/keys/revoke   - Revoke API key (API key required)");
     info!("  *    /v1/mcp            - MCP protocol endpoint");
     info!("  GET  /health            - Health check");
     info!("🔑 API Key Authentication: {}", if auth_disabled { "DISABLED" } else { "ENABLED" });
+    info!("📝 API key self-registration: {}", if registration_enabled { "ENABLED" } else { "DISABLED" });
+    if let Some(cert) = &tls_cert_path {
+        info!("🔒 TLS enabled with certificate: {}", cert);
+    } else {
+        info!("🔓 TLS disabled - running on plain {}", protocol);
+    }
     
     // Use the shared double ctrl-c handler
     let signal = handle_double_ctrl_c();
-    // Serve the Axum router over HTTP
-    axum::serve(listener, router)
-        .with_graceful_shutdown(signal)
-        .await?;
+    
+    if let (Some(cert_path), Some(key_path)) = (tls_cert_path, tls_key_path) {
+        let acceptor = create_tls_acceptor(&cert_path, &key_path).await?;
+        info!("TLS enabled with certificate: {}", cert_path);
+        axum::serve(listener, router)
+            .tls_acceptor(acceptor)
+            .serve()
+            .with_graceful_shutdown(signal)
+            .await
+    } else {
+        info!("TLS disabled - running on plain HTTP");
+        axum::serve(listener, router)
+            .with_graceful_shutdown(signal)
+            .await
+    }?;
+
     // All ok
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
+pub mod test_utils {
     use super::*;
-    use axum::{
-        Router,
-        body::Body,
-        http::{Request, StatusCode},
-        routing::get,
-    };
-    use tower::ServiceExt;
+    use crate::server::api_keys::{ApiKeyManager, create_registration_router, create_api_key_management_router};
+    use crate::server::state::AppState;
+    use crate::server::limit::{ApiKeyRateLimiter, api_key_rate_limit_middleware};
+    use axum::routing::get;
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use tokio::task::JoinHandle;
+    use tower_http::trace::TraceLayer;
+    use tracing::{debug, info};
+    use uuid::Uuid;
 
-    #[tokio::test]
-    async fn test_auth_discovery_includes_audience() {
-        let config = ServerConfig {
-            endpoint: None,
-            ns: None,
-            db: None,
-            user: None,
-            pass: None,
-            server_url: "https://embed.example.com".to_string(),
-            bind_address: Some("127.0.0.1:0".to_string()),
-            socket_path: None,
-            auth_disabled: true,
-            rate_limit_rps: 100,
-            rate_limit_burst: 200,
-            auth_server: "https://auth.embed.example.com".to_string(),
-            auth_audience: "https://custom.audience.com/".to_string(),
-            cloud_access_token: None,
-            cloud_refresh_token: None,
-        };
+    pub async fn spawn_test_server(auth_enabled: bool) -> (String, JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind test listener");
+        let addr = listener.local_addr().expect("Failed to get local addr");
+        let addr_str = format!("http://{}", addr);
 
-        // Create a simple router to test the discovery endpoint
-        let auth_servers = Json(json!({
-            "resource": config.server_url,
-            "authorization_servers": [config.auth_server],
-            "bearer_methods_supported": ["header"],
-            "audience": config.auth_audience
-        }));
+        let api_key_db_path = format!("./test_api_keys_{}.db", Uuid::new_v4());
+        let _ = std::fs::remove_file(&api_key_db_path);
 
-        let app = Router::new().route(
-            "/oauth-protected-resource",
-            get(move || async move { auth_servers }),
+        let api_key_manager = Arc::new(
+            ApiKeyManager::new(&api_key_db_path).expect("Failed to create ApiKeyManager")
         );
 
-        let request = Request::builder()
-            .uri("/oauth-protected-resource")
-            .body(Body::empty())
-            .unwrap();
+        let app_state = Arc::new(
+            AppState::new().await.expect("Failed to create AppState")
+        );
 
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        let rate_limiter = Arc::new(ApiKeyRateLimiter::new());
 
-        // For this test, we'll just verify the response structure exists
-        // The actual JSON parsing would require additional dependencies
-        assert!(response.headers().get("content-type").is_some());
+        let api_router = crate::server::api::create_api_router().with_state(app_state.clone());
+
+        let protected_api_router = if auth_enabled {
+            api_router
+                .layer(axum::Extension(api_key_manager.clone()))
+                .layer(axum::Extension(rate_limiter.clone()))
+                .layer(axum::middleware::from_fn(api_key_rate_limit_middleware))
+                .layer(axum::middleware::from_fn(crate::server::api_keys::api_key_auth_middleware))
+        } else {
+            api_router
+        };
+
+        let registration_router = create_registration_router(true)
+            .with_state(api_key_manager.clone());
+
+        let api_key_admin_router = {
+            let router = create_api_key_management_router().with_state(api_key_manager.clone());
+            if auth_enabled {
+                router
+                    .layer(axum::Extension(api_key_manager.clone()))
+                    .layer(axum::Extension(rate_limiter.clone()))
+                    .layer(axum::middleware::from_fn(api_key_rate_limit_middleware))
+                    .layer(axum::middleware::from_fn(crate::server::api_keys::api_key_auth_middleware))
+            } else {
+                router.layer(axum::Extension(api_key_manager.clone()))
+            }
+        };
+
+        let trace_layer = TraceLayer::new_for_http()
+            .make_span_with(|request: &axum::http::Request<_>| {
+                let connection_id = Uuid::new_v4().to_string();
+                tracing::info_span!(
+                    "http_request",
+                    connection_id = %connection_id,
+                    method = %request.method(),
+                    uri = %request.uri(),
+                )
+            })
+            .on_request(|request: &axum::http::Request<_>, _span: &tracing::Span| {
+                debug!(
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    "HTTP request started"
+                );
+            })
+            .on_response(
+                |response: &axum::http::Response<_>, latency: std::time::Duration, _span: &tracing::Span| {
+                    let status = response.status();
+                    if status.is_client_error() || status.is_server_error() {
+                        info!(
+                            status = %status,
+                            latency_ms = latency.as_millis(),
+                            "HTTP request failed"
+                        );
+                    } else {
+                        debug!(
+                            status = %status,
+                            latency_ms = latency.as_millis(),
+                            "HTTP request completed"
+                        );
+                    }
+                },
+            );
+
+        let router = Router::new()
+            .nest_service("/v1/mcp", Router::new()) // Skip MCP for tests
+            .merge(registration_router)
+            .merge(protected_api_router)
+            .merge(api_key_admin_router)
+            .route("/health", get(crate::server::http::health))
+            .layer(trace_layer);
+
+        let server = axum::serve(listener, router.into_make_service());
+
+        let handle = tokio::spawn(server.serve());
+
+        (addr_str, handle)
     }
 }

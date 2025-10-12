@@ -11,7 +11,7 @@ pub async fn handle_server_command(
     config_path: Option<PathBuf>,
 ) -> AnyhowResult<()> {
     match action {
-        ServerAction::Start(args) => start_server(args, config_path).await,
+        ServerAction::Start(args) => handle_start_server(args, config_path).await,
         ServerAction::Stop => stop_server().await,
         ServerAction::Status => show_status().await,
         ServerAction::Restart(args) => {
@@ -20,12 +20,12 @@ pub async fn handle_server_command(
                 // Wait a moment for cleanup
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
-            start_server(args, config_path).await
+            handle_start_server(args, config_path).await
         }
     }
 }
 
-async fn start_server(
+async fn handle_start_server(
     args: StartArgs,
     _config_path: Option<PathBuf>,
 ) -> AnyhowResult<()> {
@@ -82,40 +82,30 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
 
     let config = if let Some(socket_path) = args.socket_path {
         ServerConfig {
-            endpoint: None,
-            ns: None,
-            db: None,
-            user: None,
-            pass: None,
             server_url: format!("unix://{}", socket_path.display()),
             bind_address: None,
             socket_path: Some(socket_path.to_string_lossy().into_owned()),
             auth_disabled: args.auth_disabled,
+            registration_enabled: !args.auth_disabled,
             rate_limit_rps: 100,
             rate_limit_burst: 200,
-            auth_server: "https://auth.example.com".to_string(),
-            auth_audience: "embed-tool".to_string(),
-            cloud_access_token: None,
-            cloud_refresh_token: None,
+            api_key_db_path: "./data/api_keys.db".to_string(),
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     } else {
         let addr = format!("{}:{}", args.bind, args.port);
         ServerConfig {
-            endpoint: None,
-            ns: None,
-            db: None,
-            user: None,
-            pass: None,
             server_url: format!("http://{}", addr),
             bind_address: Some(addr),
             socket_path: None,
             auth_disabled: args.auth_disabled,
+            registration_enabled: !args.auth_disabled,
             rate_limit_rps: 100,
             rate_limit_burst: 200,
-            auth_server: "https://auth.example.com".to_string(),
-            auth_audience: "embed-tool".to_string(),
-            cloud_access_token: None,
-            cloud_refresh_token: None,
+            api_key_db_path: "./data/api_keys.db".to_string(),
+            tls_cert_path: args.tls_cert_path,
+            tls_key_path: args.tls_key_path,
         }
     };
 

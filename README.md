@@ -31,13 +31,14 @@ Static Embedding Server is a high-performance Rust-based embedding server that p
 - **OpenAI-compatible API**: `/v1/embeddings` endpoint matching OpenAI embedding API format
 - **Model distillation**: Built-in support for custom model creation via Model2Vec distillation
 - **Single instance control**: PID file-based process management ensuring only one server runs
-- **Authentication**: Bearer token authentication with JWT/JWE validation and JWKS support
+- **Authentication**: Simple API key authentication with optional self-service registration
 - **Rate limiting**: Configurable IP-based request rate limiting with burst control
 - **Health checks**: Built-in health monitoring and status endpoints
 - **Structured logging**: Comprehensive logging and metrics with tracing-subscriber
 - **MCP integration**: Model Context Protocol support for AI assistant integration
 - **Configuration management**: TOML-based hierarchical configuration with environment overrides
 - **Cross-platform**: Support for macOS, Linux, and Windows with proper path resolution
+- **TLS/HTTPS Support**: Secure connections with rustls-based TLS termination
 
 ## Installation
 
@@ -66,6 +67,46 @@ docker run --rm -p 8080:8080 -v $(pwd)/config.toml:/app/config.toml static-embed
 ## Quick Start
 
 ### CLI Usage
+
+#### Enabling HTTPS/TLS
+
+To enable HTTPS support, provide TLS certificate and key files:
+
+```bash
+embed-tool server start \
+  --port 443 \
+  --tls-cert-path /path/to/cert.pem \
+  --tls-key-path /path/to/key.pem \
+  --models potion-32M
+```
+
+The server will automatically use HTTPS when both `--tls-cert-path` and `--tls-key-path` are specified. Use port 443 for standard HTTPS operation.
+
+**Certificate Requirements:**
+- PEM format certificate chain (including full chain to root CA)
+- PKCS#8 private key in PEM format
+- Self-signed certificates work for testing
+
+**Example with self-signed cert:**
+
+```bash
+# Generate self-signed cert (for testing only)
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout key.pem -out cert.pem -subj "/CN=localhost"
+
+# Start HTTPS server
+embed-tool server start --port 443 --tls-cert-path cert.pem --tls-key-path key.pem
+```
+
+**Configuration File:**
+
+```toml
+[server]
+port = 443
+host = "0.0.0.0"
+tls_cert_path = "/etc/ssl/certs/server.crt"
+tls_key_path = "/etc/ssl/private/server.key"
+```
 
 The embedding server is managed entirely through the CLI interface:
 
@@ -125,7 +166,8 @@ The embedding server uses TOML-based configuration with environment variable ove
 # Set configuration values
 embed-tool config set server.port 8080
 embed-tool config set server.host "0.0.0.0"
-embed-tool config set auth.jwks_url "https://auth.example.com/.well-known/jwks.json"
+embed-tool config set auth.require_api_key true
+embed-tool config set auth.registration_enabled true
 embed-tool config set models.default "potion-32M"
 embed-tool config set models.available "potion-8M,potion-32M,code-distilled"
 
@@ -146,8 +188,8 @@ export EMBED_TOOL_SERVER_PORT=8080
 export EMBED_TOOL_SERVER_HOST="0.0.0.0"
 
 # Authentication
-export EMBED_TOOL_AUTH_JWKS_URL="https://auth.example.com/.well-known/jwks.json"
-export EMBED_TOOL_AUTH_AUDIENCE="embedding-api"
+export EMBED_TOOL_AUTH_REQUIRE_API_KEY=true
+export EMBED_TOOL_AUTH_REGISTRATION_ENABLED=true
 
 # Models
 export EMBED_TOOL_MODELS_DEFAULT="potion-32M"
@@ -169,9 +211,8 @@ host = "0.0.0.0"
 workers = 4
 
 [auth]
-jwks_url = "https://auth.example.com/.well-known/jwks.json"
-audience = "embedding-api"
-require_auth = true
+require_api_key = true
+registration_enabled = true
 
 [models]
 default = "potion-32M"
@@ -267,6 +308,7 @@ Generate embeddings for input text using OpenAI-compatible API format.
 Returns server health status and loaded models.
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
@@ -275,22 +317,6 @@ Returns server health status and loaded models.
     "version": "0.1.0",
     "uptime": "2h 15m 30s"
   }
-}
-```
-
-#### Authentication Discovery
-
-**GET** `/.well-known/oauth-protected-resource`
-
-Returns OAuth configuration for bearer token authentication.
-
-**Response:**
-```json
-{
-  "resource": "https://embed-api.example.com",
-  "authorization_servers": ["https://auth.example.com"],
-  "bearer_methods_supported": ["header"],
-  "audience": "embedding-api"
 }
 ```
 
@@ -303,6 +329,7 @@ Returns OAuth configuration for bearer token authentication.
 Returns available embedding models.
 
 **Response:**
+
 ```json
 {
   "object": "list",
@@ -333,8 +360,8 @@ Returns available embedding models.
 # Start server with specific models
 embed-tool server start --port 8080 --models potion-32M,code-distilled
 
-# Start with authentication enabled
-embed-tool server start --auth-required --jwks-url https://auth.example.com/.well-known/jwks.json
+# Start with authentication disabled (development only)
+embed-tool server start --auth-disabled
 
 # Start in daemon mode
 embed-tool server start --daemon --log-file /var/log/embed-tool.log
@@ -399,30 +426,73 @@ embed-tool embed "test" --endpoint http://localhost:8080
 
 ## Authentication
 
-The server supports Bearer token authentication with JWT/JWE validation:
+All HTTP and MCP endpoints require an API key by default. You can generate keys yourself when
+registration is enabled or issue them manually via the management endpoints.
 
-### JWT Token Validation
+### Registering a Key
 
-- **JWKS Integration**: Fetches public keys from configured JWKS endpoint
-- **Claim Validation**: Validates `iss`, `aud`, `exp`, `iat` claims
-- **Algorithm Support**: RSA and EC signatures
+When `auth.registration_enabled = true` (default) you can self-register an API key:
 
-### JWE Token Validation  
+**POST** `/api/register`
 
-- **Header Validation**: Validates algorithm (`dir`) and encryption (`A256GCM`)
-- **Issuer Validation**: Checks issuer matches expected value
-- **Full Decryption**: With decryption key, validates encrypted claims
+**Request:**
 
-### Configuration
+```json
+{
+  "client_name": "my-app",
+  "description": "local testing"
+}
+```
+
+**Response:**
+
+```json
+{
+  "api_key": "embed-BASE64",
+  "key_info": {
+    "id": "53c0...",
+    "client_name": "my-app",
+    "rate_limit_tier": "standard"
+  }
+}
+```
+
+The `api_key` value is only returned once. Store it securely—lost keys must be regenerated.
+
+### Using API Keys
+
+Include the key in the `Authorization` header as either `Bearer <key>` or the raw `embed-…` value:
 
 ```bash
-# Enable authentication
-embed-tool config set auth.require_auth true
-embed-tool config set auth.jwks_url "https://auth.example.com/.well-known/jwks.json"
-embed-tool config set auth.audience "embedding-api"
+curl -X POST http://localhost:8080/v1/embeddings \
+  -H "Authorization: Bearer embed-XXXX" \
+  -H "Content-Type: application/json" \
+  -d '{"input": ["Hello"], "model": "potion-32M"}'
+```
 
-# Custom issuer validation  
-embed-tool config set auth.expected_issuer "https://custom-auth.example.com"
+To disable authentication for local testing, pass `--auth-disabled` when starting the server or set
+`auth.require_api_key = false` in the configuration file.
+
+### Managing Keys
+
+Authenticated operators can manage keys via the following endpoints:
+
+- **GET** `/api/keys` – list registered keys and their metadata
+- **POST** `/api/keys/revoke` – disable a key by ID
+
+These routes require a valid API key and are typically protected behind an internal network.
+
+### Authentication Settings
+
+```bash
+# Require API keys for all requests (default)
+embed-tool config set auth.require_api_key true
+
+# Allow self-service registration
+embed-tool config set auth.registration_enabled true
+
+# Start with auth disabled for local development only
+embed-tool server start --auth-disabled
 ```
 
 ## Rate Limiting
@@ -480,21 +550,25 @@ docker run --rm -p 8080:8080 -v $(pwd):/app static-embed-tool:dev
 ### Common Issues
 
 **Server fails to start:**
+
 - Check if port is available: `netstat -an | grep 8080`
 - Verify model files exist: `embed-tool model list`
 - Check logs: `embed-tool server status --verbose`
 
 **Model loading errors:**
+
 - Ensure sufficient memory for large models
 - Verify model file integrity: `embed-tool model info <model>`
 - Check disk space for model storage
 
 **Authentication failures:**
-- Verify JWKS endpoint accessibility
-- Check token format and claims
-- Validate audience configuration
+
+- Confirm API key registration is enabled (or generate keys manually)
+- Check Authorization header format (`Bearer embed-...`)
+- Rotate the key if it was revoked or expired
 
 **Rate limiting issues:**
+
 - Adjust rate limits: `embed-tool config set rate_limit.rps 200`
 - Monitor request patterns
 - Consider using multiple server instances

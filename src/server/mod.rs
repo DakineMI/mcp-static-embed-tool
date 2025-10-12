@@ -1,6 +1,6 @@
 pub mod api;
 pub mod api_keys;
-pub mod auth;
+pub mod errors;
 pub mod http;
 pub mod limit;
 pub mod start;
@@ -89,52 +89,3 @@ pub async fn embeddings_handler(
     })
 }
 
-pub async fn start_embedding_server(args: StartArgs) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    crate::logs::init_logging_and_metrics(false);
-    
-    // Create shared app state with loaded models
-    let app_state = Arc::new(AppState::new()?);
-    
-    // Initialize API key manager
-    let api_key_manager = Arc::new(crate::server::api_keys::ApiKeyManager::new());
-    
-    // Create the OpenAI-compatible API router with API key authentication
-    let api_router = crate::server::api::create_api_router()
-        .with_state(app_state)
-        .layer(crate::server::api_keys::api_key_auth_middleware(api_key_manager.clone()));
-    
-    // Create the API key management router (no auth required for registration)
-    let api_key_router = crate::server::api_keys::create_api_key_router()
-        .with_state(api_key_manager.clone());
-    
-    // Create health check route
-    let health_router = Router::new()
-        .route("/health", axum::routing::get(crate::server::http::health));
-
-    // Combine all routers
-    let app = Router::new()
-        .merge(api_router)           // Protected API routes
-        .merge(api_key_router)       // API key management routes
-        .merge(health_router)        // Health check
-        .layer(tower_http::trace::TraceLayer::new_for_http())
-        .layer(tower_http::cors::CorsLayer::permissive())
-        .layer(crate::server::limit::create_rate_limit_layer(100, 10)); // Basic rate limiting
-
-    let bind_addr = format!("{}:{}", args.bind, args.port);
-    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    
-    println!("🚀 Embedding server with API key authentication running on http://{}", bind_addr);
-    println!("📚 Available endpoints:");
-    println!("  POST /v1/embeddings     - OpenAI-compatible embedding API (API key required)");
-    println!("  GET  /v1/models         - List available models (API key required)");
-    println!("  POST /api/register      - Self-register for API key");
-    println!("  GET  /api/keys          - List API keys (API key required)");
-    println!("  DELETE /api/keys/:id    - Revoke API key (API key required)");
-    println!("  GET  /health            - Health check");
-    println!("🔑 API Key Authentication: ENABLED");
-    println!("💡 Get your API key: curl -X POST http://{}/api/register -H 'Content-Type: application/json' -d '{{\"name\":\"my-app\"}}'", bind_addr);
-    
-    axum::serve(listener, app).await?;
-    Ok(())
-}

@@ -48,7 +48,7 @@ pub fn format_duration(duration: std::time::Duration) -> String {
 /// utils::distill("my_model", 128, "./output");
 /// ```
 /// # Panics
-pub fn distill(
+pub async fn distill(
     model_name: &str,
     pca_dims: usize,
     output_path: Option<std::path::PathBuf>,
