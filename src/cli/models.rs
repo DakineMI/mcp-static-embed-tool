@@ -341,3 +341,228 @@ impl Default for ModelRegistry {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+    use std::sync::Mutex;
+
+    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn with_test_env<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let _lock = TEST_MUTEX.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Save original HOME
+        let original_home = env::var("HOME").ok();
+        let original_userprofile = env::var("USERPROFILE").ok();
+
+        // Create a temporary directory for testing
+        let temp_dir = std::env::temp_dir().join("embed_tool_config_test").join(format!("test_{}", std::process::id()));
+        fs::create_dir_all(&temp_dir).unwrap();
+
+        // Set temporary HOME
+        unsafe { env::set_var("HOME", &temp_dir) };
+
+        let result = f();
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+        // Restore original environment
+        if let Some(home) = original_home {
+            unsafe { env::set_var("HOME", home) };
+        } else {
+            unsafe { env::remove_var("HOME") };
+        }
+        if let Some(userprofile) = original_userprofile {
+            unsafe { env::set_var("USERPROFILE", userprofile) };
+        } else {
+            unsafe { env::remove_var("USERPROFILE") };
+        }
+
+        result
+    }
+
+    #[test]
+    fn test_get_models_dir() {
+        with_test_env(|| {
+            let result = get_models_dir().unwrap();
+            assert!(result.ends_with(".embed-tool/models"));
+        });
+    }
+
+    #[test]
+    fn test_get_registry_path() {
+        with_test_env(|| {
+            let result = get_registry_path().unwrap();
+            assert!(result.ends_with(".embed-tool/models.json"));
+        });
+    }
+
+    #[test]
+    fn test_load_model_registry_empty() {
+        with_test_env(|| {
+            let registry_path = get_registry_path().unwrap();
+            // Ensure registry file doesn't exist
+            assert!(!registry_path.exists());
+
+            let registry = load_model_registry().unwrap();
+            assert!(registry.models.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_save_and_load_model_registry() {
+        with_test_env(|| {
+            let registry_path = get_registry_path().unwrap();
+
+            let mut registry = ModelRegistry::default();
+            registry.models.insert("test-model".to_string(), ModelInfo {
+                name: "test-model".to_string(),
+                path: "/path/to/model".to_string(),
+                source: "huggingface".to_string(),
+                dimensions: Some(128),
+                size_mb: Some(50.0),
+                downloaded_at: "2024-01-01T00:00:00Z".to_string(),
+                description: Some("Test model".to_string()),
+            });
+
+            save_model_registry(&registry).unwrap();
+            assert!(registry_path.exists());
+
+            let loaded = load_model_registry().unwrap();
+            assert_eq!(loaded.models.len(), 1);
+            assert!(loaded.models.contains_key("test-model"));
+
+            let model = loaded.models.get("test-model").unwrap();
+            assert_eq!(model.name, "test-model");
+            assert_eq!(model.dimensions, Some(128));
+            assert_eq!(model.size_mb, Some(50.0));
+        });
+    }
+
+    #[test]
+    fn test_get_directory_size_file() {
+        with_test_env(|| {
+            let models_dir = get_models_dir().unwrap();
+            fs::create_dir_all(&models_dir).unwrap();
+            let file_path = models_dir.join("test.txt");
+
+            // Create a test file with known size
+            fs::write(&file_path, "Hello, World!").unwrap(); // 13 bytes
+
+            let size = get_directory_size(&file_path);
+            assert!(size.is_some());
+            let size_mb = size.unwrap();
+            assert!(size_mb > 0.0); // Should be a very small number in MB
+        });
+    }
+
+    #[test]
+    fn test_get_directory_size_directory() {
+        with_test_env(|| {
+            let models_dir = get_models_dir().unwrap();
+            fs::create_dir_all(&models_dir).unwrap();
+            let dir_path = models_dir.join("test_dir");
+
+            fs::create_dir(&dir_path).unwrap();
+            fs::write(dir_path.join("file1.txt"), "content1").unwrap(); // 8 bytes
+            fs::write(dir_path.join("file2.txt"), "content2").unwrap(); // 8 bytes
+
+            let size = get_directory_size(&dir_path);
+            assert!(size.is_some());
+            let size_mb = size.unwrap();
+            assert!(size_mb > 0.0);
+        });
+    }
+
+    #[test]
+    fn test_get_directory_size_nonexistent() {
+        let temp_dir = std::env::temp_dir();
+        let nonexistent_path = temp_dir.join("nonexistent_embed_tool_test_file");
+
+        let size = get_directory_size(&nonexistent_path);
+        assert!(size.is_none());
+    }
+
+    #[test]
+    fn test_list_models_empty_registry() {
+        with_test_env(|| {
+            // Run the async test in a tokio runtime
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                // Should not panic
+                let result = list_models().await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_show_model_info_builtin() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                // Test built-in model info
+                let args = InfoArgs {
+                    model_name: "potion-32M".to_string(),
+                };
+
+                let result = show_model_info(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_show_model_info_unknown() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = InfoArgs {
+                    model_name: "unknown-model".to_string(),
+                };
+
+                let result = show_model_info(args).await;
+                assert!(result.is_ok()); // Should not panic, just print error
+            });
+        });
+    }
+
+    #[test]
+    fn test_download_model_basic() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DownloadArgs {
+                    model_name: "test-model".to_string(),
+                    alias: Some("test-alias".to_string()),
+                    force: false,
+                };
+
+                // This will fail because download is not implemented, but should not panic
+                let result = download_model(args).await;
+                assert!(result.is_ok()); // The function returns Ok even though download is simulated
+            });
+        });
+    }
+
+    #[test]
+    fn test_update_model_unknown_source() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = UpdateArgs {
+                    model_name: "test-model".to_string(),
+                };
+
+                // Should not panic for unknown model
+                let result = update_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+}

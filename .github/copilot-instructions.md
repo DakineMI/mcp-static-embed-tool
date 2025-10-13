@@ -162,7 +162,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - ⚠️ **MCP tools** partially disabled (needs rmcp crate API alignment)
 - ⚠️ **TLS support** temporarily disabled (needs rustls/axum API update)
 - ⚠️ **Rate limiting** temporarily disabled (needs tower_governor compatibility fix)
-- ⚠️ **Test Suite**: 7 out of 8 tests pass; 1 API key test failing (debugging in progress)
+- ✅ **Test Suite**: All tests now passing
 
 The project is now in a functional state for basic HTTP API and CLI operations. The disabled features can be re-enabled once the respective crate APIs are updated or workarounds are implemented.
 

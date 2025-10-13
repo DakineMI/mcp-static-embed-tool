@@ -25,10 +25,7 @@ pub async fn handle_server_command(
     }
 }
 
-async fn handle_start_server(
-    args: StartArgs,
-    _config_path: Option<PathBuf>,
-) -> AnyhowResult<()> {
+async fn validate_start_args(args: &StartArgs) -> AnyhowResult<()> {
     // Validate models
     if let Some(models_str) = &args.models {
         let model_list: Vec<&str> = models_str
@@ -48,6 +45,15 @@ async fn handle_start_server(
             ));
         }
     }
+    Ok(())
+}
+
+async fn handle_start_server(
+    args: StartArgs,
+    _config_path: Option<PathBuf>,
+) -> AnyhowResult<()> {
+    // Validate models
+    validate_start_args(&args).await?;
 
     // Check if server is already running
     if is_server_running().await? {
@@ -287,4 +293,133 @@ fn terminate_process(pid: u32) -> AnyhowResult<()> {
     }
     
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    #[tokio::test]
+    async fn test_validate_models_in_start_args() {
+        let args = StartArgs {
+            port: 8080,
+            bind: "0.0.0.0".to_string(),
+            socket_path: None,
+            models: Some("model1,model2".to_string()),
+            default_model: "model1".to_string(),
+            mcp: false,
+            auth_disabled: false,
+            daemon: false,
+            pid_file: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+        };
+
+        // This should succeed
+        assert!(validate_start_args(&args).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_models_invalid_default() {
+        let args = StartArgs {
+            port: 8080,
+            bind: "0.0.0.0".to_string(),
+            socket_path: None,
+            models: Some("model1,model2".to_string()),
+            default_model: "model3".to_string(), // Not in models list
+            mcp: false,
+            auth_disabled: false,
+            daemon: false,
+            pid_file: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+        };
+
+        let result = handle_start_server(args, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Default model"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_models_empty_list() {
+        let args = StartArgs {
+            port: 8080,
+            bind: "0.0.0.0".to_string(),
+            socket_path: None,
+            models: Some(",,,,".to_string()),
+            default_model: "potion-32M".to_string(),
+            mcp: false,
+            auth_disabled: false,
+            daemon: false,
+            pid_file: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+        };
+
+        let result = handle_start_server(args, None).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No valid models"));
+    }
+
+    #[test]
+    fn test_is_process_running() {
+        // Test with a non-existent PID
+        assert!(!is_process_running(999999));
+
+        // Test with PID 1 (usually exists on Unix systems)
+        // Note: This might fail on some systems, but is generally reliable
+        #[cfg(unix)]
+        assert!(is_process_running(1));
+    }
+
+    #[tokio::test]
+    async fn test_is_server_running_no_pid_file() {
+        // Remove any existing PID file
+        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let _ = fs::remove_file(&pid_file);
+
+        // Should return false when no PID file exists and no server is running on port 8080
+        let result = is_server_running().await;
+        assert!(result.is_ok());
+        // Note: This might return true if something is actually running on port 8080
+    }
+
+    #[tokio::test]
+    async fn test_show_status_no_server() {
+        // Remove any existing PID file
+        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let _ = fs::remove_file(&pid_file);
+
+        // Should not panic
+        let result = show_status().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_stop_server_no_pid_file() {
+        // Remove any existing PID file
+        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let _ = fs::remove_file(&pid_file);
+
+        // Should not panic
+        let result = stop_server().await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_terminate_process() {
+        // Test terminating a non-existent process (should not panic)
+        let result = terminate_process(999999);
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_find_server_by_port() {
+        // Test finding server on a port that's unlikely to have anything
+        let result = find_server_by_port(65530).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
 }
