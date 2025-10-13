@@ -1,13 +1,5 @@
 ---
 description: AI rules derived by SpecStory from the project AI interaction history
-globs: *
----
-
----
-
-description: Static embedding server with Model2Vec integration and MCP capabilities
-globs: \*
-
 ---
 
 ## PROJECT OVERVIEW
@@ -41,7 +33,7 @@ let handles: Vec<task::JoinHandle<_>> = model_loads
     .collect();
 ```
 
-**Error Handling**: Use `Result<T, Box<dyn std::error::Error>>` for main functions, with structured logging via `tracing`.
+**Error Handling**: Use `Result<T, Box<dyn std::error::Error>>` for main functions, with structured logging via `tracing`. To handle errors returned by handler functions (`anyhow::Result<()>`) in `run_cli` (which expects `Result<(), Box<dyn std::error::Error>>`), convert the error types using `.map_err(Into::into)` in each match arm. When encountering the error: `the method anyhow_kind exists for reference &Box<dyn StdError>, but its trait bounds were not satisfied`, wrap the error in a descriptive message using `anyhow::anyhow!` with formatting. When using the `?` operator on a `Result` where the error type is a `&str`, the `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 
 **Path Resolution**: Cross-platform home directory detection:
 
@@ -106,6 +98,14 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - Model loading failures: Check paths and memory for large models
 - Authentication errors: Verify `Authorization: Bearer embed-...` header format
 - Port conflicts: Use `netstat -an | grep 8080` to check availability
+- **Missing generics for `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
+- **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
+- **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
+- **Syntax Error: expected an item**: This is often caused by a misplaced duplicate struct definition or incomplete method code. Ensure the code block has a proper structure, remove duplicate structs, correct the type to use `InMemoryState`, and complete any incomplete methods.
+- **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
+- **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**:  This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 
 **Key Log Messages**:
 
@@ -115,13 +115,27 @@ curl -X POST http://localhost:8080/v1/embeddings \
 
 **Take Ownership Of Tool Issues**: Always assume you are at fault first. Review your steps carefully before blaming tools or code. Absence of evidence is not evidence of absence.
 
+**Current Project Status**: The codebase currently has compilation errors (92 errors). The core architecture is sound but incomplete, requiring systematic fixes before testing or deployment. Expect type mismatches, missing trait implementations, and incomplete async handling.
+
+**Compilation Errors and Fixes**:
+
+- **`HashMap`, `RwLock`, `json`, `ApiKey` defined multiple times**: Remove duplicate import statements, ensuring each is defined only once in the module's namespace.
+- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
+- **Unresolved import `governor::state::keyed::NotKeyed`**: Update the import to `governor::state::NotKeyed`.
+- **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
+- **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
+- **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
+- **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
+- **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**:  This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+
 ## AI CODING AGENT GUIDELINES
 
 To ensure AI coding agents are immediately productive, consider the following:
 
 - **Big Picture Architecture:** The server is designed around serving embeddings via HTTP API and MCP. The core components include `src/main.rs` (CLI entrypoint), `src/cli/` (CLI implementation), `src/server/mod.rs` (HTTP server), `src/server/api_keys.rs` (API key management), and `src/utils/mod.rs` (model distillation). Understand how these components interact to provide embedding services.
-- **Critical Developer Workflows:** Use `cargo run` to start the server. API keys can be obtained via `curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'`. Embeddings can be generated using `curl -X POST http://localhost:8080/v1/embeddings -H "Authorization: Bearer embed-YOUR-API-KEY" -d '{"input":["Hello world"],"model":"potion-32M"}'`.
-- **Project-Specific Conventions:** The project adapts proven patterns from the SurrealDB project, including authentication, rate limiting, and CLI design. Pay attention to the single-instance control of the CLI and the TOML configuration files.
+- **Critical Developer Workflows:** Use `cargo run` to start the server. API keys can be obtained via `curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'`. Embeddings can be generated using `curl -X POST http://localhost:8080/v1/embeddings -H "Authorization: Bearer embed-YOUR-API-KEY" -d '{"input":["Hello world"],"model":"potion-32M"}`.
+- **Project-Specific Conventions:** The project adapts proven patterns, including authentication, rate limiting, and CLI design. Pay attention to the single-instance control of the CLI and the TOML configuration files. The project also uses auto-versioning for files, graceful model loading fallbacks, and integrates with an external Python CLI.
 - **Integration Points:** The server integrates with the `model2vec` Python CLI for model distillation. API key authentication is a crucial integration point.
 
 Key files/directories to examine:
@@ -147,3 +161,13 @@ When documenting these aspects:
 - Avoid generic advice and focus on THIS project's specific approaches.
 - Document only discoverable patterns, not aspirational practices.
 - Reference key files/directories that exemplify important patterns.
+- Use detailed todos to track all work. They should be specific and broken down in reasonable, completable, simple tasks.
+
+**Updates needed for `copilot-instructions.md`:**
+
+1. Remove outdated references (e.g., "transformed from SurrealDB").
+2. Update architecture section to reflect current compilation issues and incomplete implementations.
+3. Add debugging section including common compilation errors and their fixes.
+4. Clarify project status as a work-in-progress.
+5. Update workflow examples to reflect current CLI command availability.
+6. **Do not create `agent.md`**. The existing `copilot-instructions.md` serves the same purpose.

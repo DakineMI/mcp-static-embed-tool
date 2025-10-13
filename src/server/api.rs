@@ -5,14 +5,9 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use model2vec_rs::model::StaticModel;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
-
-use crate::server::errors::AppError;
+use tracing::error;
 
 use super::state::AppState;
 
@@ -160,21 +155,7 @@ pub async fn embeddings_handler(
     // Generate embeddings with optional parallel chunking for large batches
     let embeddings: Vec<Vec<f32>> = if request.input.len() <= 32 {
         // Small batch: encode directly
-        match model.encode(&request.input) {
-            Ok(embeddings) => embeddings,
-            Err(e) => {
-                error!("Failed to generate embeddings: {}", e);
-                let error = ApiError {
-                    error: ErrorDetails {
-                        message: "Embedding generation failed".to_string(),
-                        r#type: "server_error".to_string(),
-                        param: None,
-                        code: None,
-                    },
-                };
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, ResponseJson(error)));
-            }
-        }
+        model.encode(&request.input)
     } else {
         // Large batch: split into chunks of 32 and process in parallel
         use futures::future::join_all;
@@ -195,19 +176,7 @@ pub async fn embeddings_handler(
 
         for result in results {
             match result {
-                Ok(Ok(embeddings)) => all_embeddings.extend(embeddings),
-                Ok(Err(e)) => {
-                    error!("Failed to generate chunk embeddings: {}", e);
-                    let error = ApiError {
-                        error: ErrorDetails {
-                            message: "Embedding generation failed".to_string(),
-                            r#type: "server_error".to_string(),
-                            param: None,
-                            code: None,
-                        },
-                    };
-                    return Err((StatusCode::INTERNAL_SERVER_ERROR, ResponseJson(error)));
-                }
+                Ok(embeddings) => all_embeddings.extend(embeddings),
                 Err(e) => {
                     error!("Spawn blocking failed: {}", e);
                     let error = ApiError {

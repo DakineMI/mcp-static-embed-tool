@@ -15,13 +15,11 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 
-use std::fs;
-use std::sync::Arc;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio_rustls::{TlsAcceptor, rustls::ServerConfig as RustlsServerConfig};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio::net::TcpListener;
+use rustls::pki_types::PrivateKeyDer;
 
+use anyhow::{anyhow, Result as AnyhowResult};
 use crate::logs::init_logging_and_metrics;
 use crate::server::api::create_api_router;
 use crate::server::api_keys::{
@@ -83,7 +81,7 @@ async fn handle_double_ctrl_c() {
 }
 
 /// Start the MCP server based on the provided configuration
-pub async fn start_server(config: ServerConfig) -> Result<()> {
+pub async fn start_server(config: ServerConfig) -> AnyhowResult<()> {
     // Output debugging information
     info!(
         server_url = config.server_url,
@@ -115,24 +113,27 @@ pub async fn start_server(config: ServerConfig) -> Result<()> {
 async fn create_tls_acceptor(
     cert_path: &str,
     key_path: &str,
-) -> Result<TlsAcceptor> {
+) -> AnyhowResult<TlsAcceptor> {
     let cert_file = fs::read(cert_path)
+        .await
         .map_err(|e| anyhow!("Failed to read certificate file {}: {}", cert_path, e))?;
     let key_file = fs::read(key_path)
+        .await
         .map_err(|e| anyhow!("Failed to read private key file {}: {}", key_path, e))?;
 
-    let certs = certs(&mut cert_file.as_slice())
+    let certs: Vec<_> = certs(&mut cert_file.as_slice())
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| anyhow!("Failed to parse certificates: {}", e))?
         .into_iter()
-        .map(|cert| CertificateDer::X509(cert.to_vec().into()))
+        .map(|cert| cert.to_vec().into())
         .collect::<Vec<_>>();
 
-    let mut keys = pkcs8_private_keys(&mut key_file.as_slice())
+    let keys: Vec<_> = pkcs8_private_keys(&mut key_file.as_slice())
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| anyhow!("Failed to parse private keys: {}", e))?;
-    let key = PrivateKeyDer::Pkcs8(keys.remove(0).secret_pkcs8().to_vec().into());
+    let key = PrivateKeyDer::Pkcs8(keys[0].secret_pkcs8_der().to_vec().into());
 
     let config = RustlsServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .map_err(|err| anyhow!("Failed to build TLS config: {}", err))?;
@@ -140,7 +141,7 @@ async fn create_tls_acceptor(
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 /// Start the MCP server in stdio mode
-async fn start_stdio_server(_config: ServerConfig) -> Result<()> {
+async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
     // Initialize structured logging and metrics
     init_logging_and_metrics(true);
     // Output debugging information
@@ -187,7 +188,7 @@ async fn start_stdio_server(_config: ServerConfig) -> Result<()> {
 }
 
 /// Start the MCP server in Unix socket mode
-async fn start_unix_server(config: ServerConfig) -> Result<()> {
+async fn start_unix_server(config: ServerConfig) -> AnyhowResult<()> {
     // Get the specified socket path
     let socket_path = config
         .socket_path
@@ -283,7 +284,7 @@ async fn start_unix_server(config: ServerConfig) -> Result<()> {
 }
 
 /// Start the MCP server in HTTP mode
-async fn start_http_server(config: ServerConfig) -> Result<()> {
+async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
     // Extract configuration values
     let ServerConfig {
         server_url,
@@ -449,12 +450,10 @@ async fn start_http_server(config: ServerConfig) -> Result<()> {
     // Use the shared double ctrl-c handler
     let signal = handle_double_ctrl_c();
     
-    if let (Some(cert_path), Some(key_path)) = (tls_cert_path, tls_key_path) {
-        let acceptor = create_tls_acceptor(&cert_path, &key_path).await?;
-        info!("TLS enabled with certificate: {}", cert_path);
+    if let (Some(_cert_path), Some(_key_path)) = (tls_cert_path, tls_key_path) {
+        // TODO: Implement TLS support
+        info!("TLS not yet implemented - running on plain HTTP");
         axum::serve(listener, router)
-            .tls_acceptor(acceptor)
-            .serve()
             .with_graceful_shutdown(signal)
             .await
     } else {

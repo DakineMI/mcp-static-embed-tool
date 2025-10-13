@@ -76,11 +76,11 @@ pub struct StartArgs {
     pub socket_path: Option<PathBuf>,
     
     /// Models to load (comma-separated)
-    #[arg(short, long, validator = validate_models)]
+    #[arg(short, long, value_parser = validate_models)]
     pub models: Option<String>,
     
     /// Default model to use
-    #[arg(short, long, default_value = "potion-32M", validator = validate_model_name)]
+    #[arg(short, long, default_value = "potion-32M", value_parser = validate_model_name)]
     pub default_model: String,
     
     /// Enable MCP mode alongside HTTP
@@ -272,19 +272,19 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     
     match cli.command {
         Commands::Server { action } => {
-            handle_server_command(action, cli.config).await
+            handle_server_command(action, cli.config).await.map_err(Into::into)
         }
         Commands::Model { action } => {
-            handle_model_command(action, cli.config).await
+            handle_model_command(action, cli.config).await.map_err(Into::into)
         }
         Commands::Config { action } => {
-            handle_config_command(action, cli.config).await
+            handle_config_command(action, cli.config).await.map_err(Into::into)
         }
         Commands::Embed(args) => {
-            handle_embed_command(args, cli.config).await
+            handle_embed_command(args, cli.config).await.map_err(Into::into)
         }
         Commands::Batch(args) => {
-            handle_batch_command(args, cli.config).await
+            handle_batch_command(args, cli.config).await.map_err(Into::into)
         }
     }
 }

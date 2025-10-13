@@ -1,5 +1,3 @@
-use std::process::Command;
-
 /// Generate a unique connection ID
 pub fn generate_connection_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};

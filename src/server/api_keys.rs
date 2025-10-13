@@ -11,17 +11,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sled::Db;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn, error};
+use rand::RngCore;
 use uuid::Uuid;
-
-use crate::server::errors::AppError;
-use crate::server::api::{ApiError, ErrorDetails};
-// No top-level use for sha2 needed, as it's used internally in mod sha256
-use rand::Rng;
 
 /// API Key information
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
@@ -102,8 +97,7 @@ impl ApiKeyManager {
         let key_id = Uuid::new_v4().to_string();
         
         // Generate a secure API key: embed-<base64-encoded-random-bytes>
-        use rand::RngCore;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut random_bytes = [0u8; 32];
         rng.fill_bytes(&mut random_bytes);
         let api_key = format!("embed-{}", STANDARD.encode(random_bytes));
@@ -174,22 +168,22 @@ impl ApiKeyManager {
         let key_hash = sha256::digest(api_key.as_bytes());
         
         // Look up the key ID from hash index
-        let hashes_tree = self.db.open_tree("hashes").map_err(|_| None).ok()?;
-        let key_id_bytes = match hashes_tree.get(key_hash.as_bytes()).map_err(|_| None).ok()? {
+        let hashes_tree = self.db.open_tree("hashes").map_err(|_| None::<sled::Tree>).ok()?;
+        let key_id_bytes = match hashes_tree.get(key_hash.as_bytes()).map_err(|_| None::<sled::IVec>).ok()? {
             Some(id) => id,
             None => return None,
         };
         let key_id = String::from_utf8(key_id_bytes.to_vec()).ok()?;
 
         // Get the key info from keys tree
-        let keys_tree = self.db.open_tree("keys").map_err(|_| None).ok()?;
-        let serialized = match keys_tree.get(key_id.as_bytes()).map_err(|_| None).ok()? {
+        let keys_tree = self.db.open_tree("keys").map_err(|_| None::<sled::Tree>).ok()?;
+        let serialized = match keys_tree.get(key_id.as_bytes()).map_err(|_| None::<sled::IVec>).ok()? {
             Some(data) => data,
             None => return None,
         };
 
-        let (key_info,): (ApiKey,) = bincode::decode_from_slice(&serialized, bincode::config::standard())
-            .map_err(|_| None).ok()?;
+        let (key_info, _): (ApiKey, usize) = bincode::decode_from_slice(&serialized, bincode::config::standard())
+            .map_err(|_| None::<(ApiKey, usize)>).ok()?;
         
         // Check if key is active
         if !key_info.active {
@@ -207,7 +201,7 @@ impl ApiKeyManager {
 
         // Update in storage
         let serialized_updated = bincode::encode_to_vec(&updated_key, bincode::config::standard())
-            .map_err(|_| None).ok()?;
+            .map_err(|_| None::<Vec<u8>>).ok()?;
         if keys_tree.insert(key_id.as_bytes(), serialized_updated.as_slice()).is_err() {
             return None;
         }
@@ -223,15 +217,18 @@ impl ApiKeyManager {
 
     /// List all API keys (without sensitive data)
     pub async fn list_api_keys(&self) -> Vec<ApiKeyInfo> {
-        let keys_tree = self.db.open_tree("keys").map_err(|e| {
-            error!("Failed to open keys tree: {}", e);
-            return vec![];
-        })?;
+        let keys_tree = match self.db.open_tree("keys") {
+            Ok(tree) => tree,
+            Err(e) => {
+                error!("Failed to open keys tree: {}", e);
+                return vec![];
+            }
+        };
 
         let mut api_keys = vec![];
         for entry in keys_tree.iter().map(|res| res.map_err(|e| error!("DB error: {}", e))) {
             if let Ok((_, value)) = entry {
-                let (key_info,): (ApiKey,) = match bincode::decode_from_slice(&value, bincode::config::standard()) {
+                let (key_info, _): (ApiKey, usize) = match bincode::decode_from_slice(&value, bincode::config::standard()) {
                     Ok(decoded) => decoded,
                     Err(e) => {
                         error!("Failed to deserialize ApiKey: {}", e);
@@ -255,17 +252,20 @@ impl ApiKeyManager {
 
     /// Revoke an API key
     pub async fn revoke_api_key(&self, key_id: &str) -> bool {
-        let keys_tree = self.db.open_tree("keys").map_err(|e| {
-            error!("Failed to open keys tree: {}", e);
-            false
-        })?;
+        let keys_tree = match self.db.open_tree("keys") {
+            Ok(tree) => tree,
+            Err(e) => {
+                error!("Failed to open keys tree: {}", e);
+                return false;
+            }
+        };
 
         let serialized = match keys_tree.get(key_id.as_bytes()) {
             Ok(Some(data)) => data,
             _ => return false,
         };
 
-        let (mut key_info,): (ApiKey,) = match bincode::decode_from_slice(&serialized, bincode::config::standard()) {
+        let (mut key_info, _): (ApiKey, usize) = match bincode::decode_from_slice(&serialized, bincode::config::standard()) {
             Ok(decoded) => decoded,
             Err(e) => {
                 error!("Failed to deserialize ApiKey for revocation: {}", e);
@@ -292,13 +292,10 @@ impl ApiKeyManager {
 }
 
 /// API key authentication middleware
-pub async fn api_key_auth_middleware<B>(
-    req: Request<B>,
-    next: Next<B>,
-) -> Result<Response, StatusCode>
-where
-    B: Send,
-{
+pub async fn api_key_auth_middleware(
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
     // Extract API key manager from request extensions
     let api_key_manager = req.extensions()
         .get::<Arc<ApiKeyManager>>()

@@ -1,4 +1,5 @@
 use axum::{
+    body::Body,
     extract::Request,
     http::{Response, StatusCode},
     middleware::Next,
@@ -7,7 +8,8 @@ use axum::{
 use governor::{
     middleware::NoOpMiddleware,
     clock::DefaultClock,
-    state::{DirectState, NotKeyed},
+    state::InMemoryState,
+    state::NotKeyed,
     Quota, RateLimiter,
 };
 use metrics::counter;
@@ -23,8 +25,6 @@ use tower_governor::{
 use tracing::{debug, warn};
 
 use crate::server::api_keys::ApiKey;
-use crate::server::errors::AppError;
-use crate::server::api::{ApiError, ErrorDetails};
 
 /// Custom key extractor that tries to get IP from various headers and falls back to a default
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -81,7 +81,6 @@ impl KeyExtractor for RobustIpKeyExtractor {
                     .get("X-Remote-Addr")
                     .and_then(|h| h.to_str().ok())
             });
-        // If we find an idenfitying key, use it
         if let Some(ip) = ip {
             debug!(ip = ip, "Extracted IP address from headers");
             return Ok(ip.to_string());
@@ -96,9 +95,8 @@ impl KeyExtractor for RobustIpKeyExtractor {
         Ok("unknown".to_string())
     }
 }
-
 /// Create a rate limit layer based on client IP address with robust header extraction
-pub fn create_rate_limit_layer(rps: u32, burst: u32) -> GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware> {
+pub fn create_rate_limit_layer(rps: u32, burst: u32) -> GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, Arc<HashMap<String, InMemoryState>>> {
     // Create a rate limit configuration using IP addresses
     let config = GovernorConfigBuilder::default()
         .per_second(rps as u64)
@@ -106,29 +104,13 @@ pub fn create_rate_limit_layer(rps: u32, burst: u32) -> GovernorLayer<RobustIpKe
         .key_extractor(RobustIpKeyExtractor)
         .finish()
         .expect("Failed to create rate limit configuration");
-    // Return the rate limit layer with error handler
-    GovernorLayer::new(config).error_handler(|e| {
-        // Output debugging information
-        warn!("Rate limit exceeded: {e}");
-        // Increment rate limit error metrics
-        counter!("embedtool.total_errors").increment(1);
-        counter!("embedtool.total_rate_limit_errors").increment(1);
-        // Return the error response
-        Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .body("Rate limit exceeded".into())
-            .unwrap()
-    })
+
+    // Return the rate limit layer
+    GovernorLayer::new(config)
 }
-
-use crate::server::api_keys::ApiKey;
-use std::collections::HashMap;
-use tokio::sync::RwLock;
-use serde_json::json;
-
 #[derive(Clone)]
 pub struct ApiKeyRateLimiter {
-    limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter<NotKeyed, DirectState, DefaultClock>>>>>,
+    limiters: Arc<RwLock<HashMap<String, Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>>>,
 }
 
 impl ApiKeyRateLimiter {
@@ -138,37 +120,32 @@ impl ApiKeyRateLimiter {
         }
     }
 
-    pub async fn get_or_create_limiter(&self, key_id: &str, max_per_min: u32) -> Arc<RateLimiter<NotKeyed, DirectState, DefaultClock>> {
-        let limiters = &self.limiters;
-
+    pub async fn get_or_create_limiter(&self, key_id: &str, max_per_min: u32) -> Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> {
         {
-            let read_guard = limiters.read().await;
+            let read_guard = self.limiters.read().await;
             if let Some(limiter) = read_guard.get(key_id) {
                 return limiter.clone();
             }
         }
 
         let rate_per_sec = (((max_per_min as f64 / 60.0).ceil()) as u32).max(1);
-        let burst_size = max_per_min;
+        let burst_size = rate_per_sec; // Allow burst up to the per-second rate
         let per_sec_nz = NonZeroU32::new(rate_per_sec).unwrap();
         let burst_nz = NonZeroU32::new(burst_size).unwrap();
         let quota = Quota::per_second(per_sec_nz).allow_burst(burst_nz);
         let limiter = Arc::new(RateLimiter::direct(quota));
 
-        let mut write_guard = limiters.write().await;
+        let mut write_guard = self.limiters.write().await;
         write_guard.entry(key_id.to_string()).or_insert(limiter.clone());
 
         limiter
     }
 }
 
-pub async fn api_key_rate_limit_middleware<B>(
-    req: Request<B>,
-    next: Next<B>,
-) -> Response
-where
-    B: Send + 'static,
-{
+pub async fn api_key_rate_limit_middleware(
+    req: Request,
+    next: Next,
+) -> Response<Body> {
     let rate_limiter = match req.extensions().get::<Arc<ApiKeyRateLimiter>>() {
         Some(rl) => rl,
         None => {

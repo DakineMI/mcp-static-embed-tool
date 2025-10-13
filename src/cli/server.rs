@@ -112,7 +112,7 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
     start_server(config).await
 }
 
-async fn start_daemon(args: StartArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     println!("Starting embedding server as daemon...");
     
     let current_exe = std::env::current_exe()?;
@@ -159,7 +159,7 @@ async fn start_daemon(args: StartArgs) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-async fn stop_server() -> Result<(), Box<dyn std::error::Error>> {
+async fn stop_server() -> AnyhowResult<()> {
     let pid_file = std::env::temp_dir().join("embed-tool.pid");
     
     if !pid_file.exists() {
@@ -183,7 +183,7 @@ async fn stop_server() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn show_status() -> Result<(), Box<dyn std::error::Error>> {
+async fn show_status() -> AnyhowResult<()> {
     let pid_file = std::env::temp_dir().join("embed-tool.pid");
     
     if pid_file.exists() {
@@ -212,7 +212,7 @@ async fn show_status() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn is_server_running() -> Result<bool, Box<dyn std::error::Error>> {
+async fn is_server_running() -> AnyhowResult<bool> {
     let pid_file = std::env::temp_dir().join("embed-tool.pid");
     
     if pid_file.exists() {
@@ -237,7 +237,7 @@ fn is_process_running(pid: u32) -> bool {
     system.process(Pid::from(pid as usize)).is_some()
 }
 
-async fn find_server_by_port(port: u16) -> Result<Option<u32>, Box<dyn std::error::Error>> {
+async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
     // This is a simplified implementation
     // In practice, you'd want to check netstat or similar
     let output = Command::new("lsof")
@@ -254,7 +254,7 @@ async fn find_server_by_port(port: u16) -> Result<Option<u32>, Box<dyn std::erro
     Ok(None)
 }
 
-fn terminate_process(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
+fn terminate_process(pid: u32) -> AnyhowResult<()> {
     #[cfg(unix)]
     {
         unsafe {

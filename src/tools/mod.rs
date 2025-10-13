@@ -1,9 +1,9 @@
 use anyhow::Result;
 use metrics::counter;
+use model2vec_rs::model::StaticModel;
 use rmcp::{
     ErrorData as McpError,
     handler::server::router::tool::ToolRouter,
-    handler::server::tool::Parameters,
     model::{CallToolResult, Content},
     tool, tool_router,
 };
@@ -95,6 +95,14 @@ impl EmbeddingService {
             created_at: Instant::now(),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Initialize database connection for this service
+    pub async fn initialize_connection(&self) -> Result<(), McpError> {
+        // For now, this is a no-op since we're using in-memory storage
+        // In the future, this could initialize database connections
+        debug!(connection_id = %self.connection_id, "Initializing connection (no-op)");
+        Ok(())
     }
 
     /// Generate embeddings for a single text input
@@ -497,7 +505,7 @@ Examples:
                     connection_id = %self.connection_id,
                     input_model = %input_model,
                     output_name = %output_name,
-                    output_path = %output_path,
+                    output_path = ?output_path,
                     dimensions = dims,
                     duration_ms = duration.as_millis(),
                     "Successfully distilled model"
@@ -583,3 +591,12 @@ Examples:
         Ok(())
     }
 }
+
+// TODO: Fix ServerHandler trait implementation
+// impl ServerHandler for EmbeddingService {
+//     type ToolRouter = ToolRouter<Self>;
+
+//     fn tools(&self) -> &Self::ToolRouter {
+//         &self.tool_router
+//     }
+// }

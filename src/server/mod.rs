@@ -12,14 +12,9 @@ pub use start_simple::start_http_server;
 use axum::{
     extract::{Json, Query},
     response::Json as ResponseJson,
-    routing::post,
-    Router,
 };
-use model2vec_rs::model::StaticModel;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::collections::HashMap;
-use crate::cli::StartArgs;
 use crate::server::state::AppState;
 
 #[derive(Deserialize)]

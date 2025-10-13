@@ -1,4 +1,5 @@
 use crate::cli::{ModelAction, DownloadArgs, DistillArgs, RemoveArgs, UpdateArgs, InfoArgs};
+use anyhow::Result as AnyhowResult;
 use std::path::PathBuf;
 use std::fs;
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ struct ModelInfo {
 pub async fn handle_model_command(
     action: ModelAction,
     _config_path: Option<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AnyhowResult<()> {
     match action {
         ModelAction::List => list_models().await,
         ModelAction::Download(args) => download_model(args).await,
@@ -34,7 +35,7 @@ pub async fn handle_model_command(
     }
 }
 
-async fn list_models() -> Result<(), Box<dyn std::error::Error>> {
+async fn list_models() -> AnyhowResult<()> {
     let registry = load_model_registry()?;
     
     if registry.models.is_empty() {
@@ -62,7 +63,7 @@ async fn list_models() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn download_model(args: DownloadArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn download_model(args: DownloadArgs) -> AnyhowResult<()> {
     let model_name = args.alias.unwrap_or_else(|| args.model_name.clone());
     let models_dir = get_models_dir()?;
     let model_path = models_dir.join(&model_name);
@@ -102,7 +103,7 @@ async fn download_model(args: DownloadArgs) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-async fn distill_model(args: DistillArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn distill_model(args: DistillArgs) -> AnyhowResult<()> {
     let models_dir = get_models_dir()?;
     let output_path = if args.output.starts_with('/') || args.output.contains(':') {
         PathBuf::from(&args.output)
@@ -126,8 +127,11 @@ async fn distill_model(args: DistillArgs) -> Result<(), Box<dyn std::error::Erro
     }
     
     // Call the distillation function from utils
-    crate::utils::distill(&args.input, 128, Some(output_path.clone()))?;
-    
+
+    crate::utils::distill(&args.input, 128, Some(output_path.clone())).await.map_err(|e| anyhow::anyhow!("Distillation failed: {}", e))?;
+
+
+
     // Add to registry
     let mut registry = load_model_registry().unwrap_or_default();
     registry.models.insert(args.output.clone(), ModelInfo {
@@ -146,7 +150,7 @@ async fn distill_model(args: DistillArgs) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-async fn remove_model(args: RemoveArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn remove_model(args: RemoveArgs) -> AnyhowResult<()> {
     let mut registry = load_model_registry()?;
     
     if let Some(model_info) = registry.models.get(&args.model_name) {
@@ -186,7 +190,7 @@ async fn remove_model(args: RemoveArgs) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-async fn update_model(args: UpdateArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn update_model(args: UpdateArgs) -> AnyhowResult<()> {
     let registry = load_model_registry()?;
     
     if let Some(model_info) = registry.models.get(&args.model_name) {
@@ -213,7 +217,7 @@ async fn update_model(args: UpdateArgs) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-async fn show_model_info(args: InfoArgs) -> Result<(), Box<dyn std::error::Error>> {
+async fn show_model_info(args: InfoArgs) -> AnyhowResult<()> {
     let registry = load_model_registry()?;
     
     if let Some(model_info) = registry.models.get(&args.model_name) {
@@ -269,23 +273,23 @@ async fn show_model_info(args: InfoArgs) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-fn get_models_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_models_dir() -> AnyhowResult<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "Could not determine home directory")?;
+        .map_err(|_| anyhow::anyhow!("Could not determine home directory"))?;
     
     Ok(PathBuf::from(home).join(".embed-tool").join("models"))
 }
 
-fn get_registry_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_registry_path() -> AnyhowResult<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
-        .map_err(|_| "Could not determine home directory")?;
+        .map_err(|_| anyhow::anyhow!("Could not determine home directory"))?;
     
     Ok(PathBuf::from(home).join(".embed-tool").join("models.json"))
 }
 
-fn load_model_registry() -> Result<ModelRegistry, Box<dyn std::error::Error>> {
+fn load_model_registry() -> AnyhowResult<ModelRegistry> {
     let registry_path = get_registry_path()?;
     
     if !registry_path.exists() {
@@ -299,7 +303,7 @@ fn load_model_registry() -> Result<ModelRegistry, Box<dyn std::error::Error>> {
     Ok(registry)
 }
 
-fn save_model_registry(registry: &ModelRegistry) -> Result<(), Box<dyn std::error::Error>> {
+fn save_model_registry(registry: &ModelRegistry) -> AnyhowResult<()> {
     let registry_path = get_registry_path()?;
     
     // Create directory if it doesn't exist

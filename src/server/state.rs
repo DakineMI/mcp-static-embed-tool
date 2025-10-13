@@ -1,16 +1,16 @@
-use crate::server::errors::AppError;
 use futures::future::join_all;
 use model2vec_rs::model::StaticModel;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use tokio::task;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
+use anyhow::anyhow;
 
 /// Shared application state containing loaded models
 #[derive(Clone)]
 pub struct AppState {
-    pub models: HashMap<String, StaticModel>,
+    pub models: HashMap<String, Arc<StaticModel>>,
     pub default_model: String,
     pub startup_time: SystemTime,
 }
@@ -41,13 +41,13 @@ impl AppState {
 
         let results = join_all(handles).await;
 
-        let mut models = HashMap::new();
+        let mut models: HashMap<String, Arc<StaticModel>> = HashMap::new();
 
         for result in results {
             match result {
                 Ok(Ok((name, model))) => {
                     info!("✓ Loaded {} model", name);
-                    models.insert(name, model);
+                    models.insert(name, Arc::new(model));
                 }
                 Ok(Err(e)) => {
                     warn!("✗ {}", e);
