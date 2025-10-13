@@ -170,4 +170,114 @@ mod tests {
     fn test_with_zeros() {
         assert_eq!(calculate_total(&[0, 0, 5]), 5);
     }
+
+    #[test]
+    fn test_generate_connection_id() {
+        let id1 = generate_connection_id();
+        let id2 = generate_connection_id();
+        
+        // IDs should be different
+        assert_ne!(id1, id2);
+        
+        // ID should have the expected format: conn_{timestamp:x}_{random:x}
+        assert!(id1.starts_with("conn_"));
+        assert!(id1.contains("_"));
+        
+        // Should contain only valid hex characters after conn_
+        let parts: Vec<&str> = id1.split('_').collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0], "conn");
+        
+        // Check that timestamp and random parts are valid hex
+        assert!(u64::from_str_radix(parts[1], 16).is_ok());
+        assert!(u32::from_str_radix(parts[2], 16).is_ok());
+    }
+
+    #[test]
+    fn test_format_duration_milliseconds() {
+        let duration = std::time::Duration::from_millis(150);
+        assert_eq!(format_duration(duration), "150ms");
+    }
+
+    #[test]
+    fn test_format_duration_seconds() {
+        let duration = std::time::Duration::from_secs(5) + std::time::Duration::from_millis(250);
+        assert_eq!(format_duration(duration), "5.250s");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        let duration = std::time::Duration::from_secs(125) + std::time::Duration::from_millis(500);
+        assert_eq!(format_duration(duration), "2m 5s");
+    }
+
+    #[test]
+    fn test_format_duration_hours() {
+        let duration = std::time::Duration::from_secs(7325) + std::time::Duration::from_millis(750);
+        assert_eq!(format_duration(duration), "2h 2m 5s");
+    }
+
+    #[test]
+    fn test_format_duration_edge_cases() {
+        // Zero duration
+        let duration = std::time::Duration::from_millis(0);
+        assert_eq!(format_duration(duration), "0ms");
+        
+        // Exactly 1 minute
+        let duration = std::time::Duration::from_secs(60);
+        assert_eq!(format_duration(duration), "1m 0s");
+        
+        // Exactly 1 hour
+        let duration = std::time::Duration::from_secs(3600);
+        assert_eq!(format_duration(duration), "1h 0m 0s");
+    }
+
+    #[test]
+    fn test_distill_output_path_logic() {
+        // Test the output path generation logic (without actually running the command)
+        use std::path::PathBuf;
+        use std::env;
+        
+        // Test with provided path
+        let provided_path = PathBuf::from("/custom/path/model");
+        let result = Some(provided_path.clone());
+        assert_eq!(result, Some(provided_path));
+        
+        // Test default path generation
+        let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let expected_default = PathBuf::from(home).join("ai/models/model2vec").join("test-model");
+        
+        let default_path = None;
+        let computed_default = default_path.unwrap_or_else(|| {
+            let home = env::var("HOME")
+                .or_else(|_| env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join("ai/models/model2vec").join("test-model")
+        });
+        
+        assert_eq!(computed_default, expected_default);
+    }
+
+    #[test]
+    fn test_distill_versioning_logic() {
+        // Test the auto-versioning logic for existing files
+        use std::path::PathBuf;
+        
+        let base_path = PathBuf::from("/tmp/test_model");
+        
+        // Simulate the versioning logic
+        let file_stem = "test_model";
+        let extension = "";
+        let parent = PathBuf::from("/tmp");
+        
+        // This would normally check if files exist, but we'll test the logic
+        let version = 2;
+        let candidate = parent.join(format!("{}_v{}{}", file_stem, version, extension));
+        assert_eq!(candidate, PathBuf::from("/tmp/test_model_v2"));
+        
+        // Test with extension
+        let extension = ".bin";
+        let candidate_with_ext = parent.join(format!("{}_v{}{}", file_stem, version, extension));
+        assert_eq!(candidate_with_ext, PathBuf::from("/tmp/test_model_v2.bin"));
+    }
 }

@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, Args};
+use clap::{Parser, Subcommand, Args, Arg, ArgMatches, ArgAction, Command};
 use std::path::PathBuf;
 
 mod server;
@@ -18,11 +18,11 @@ pub struct Cli {
     pub command: Commands,
     
     /// Configuration file path
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub config: Option<PathBuf>,
     
     /// Verbose output
-    #[arg(short, long, global = true)]
+    #[arg(long, global = true)]
     pub verbose: bool,
 }
 
@@ -49,7 +49,7 @@ pub enum Commands {
     Batch(BatchArgs),
 }
 
-#[derive(Subcommand)]
+#[derive(Clone, Debug, Subcommand)]
 pub enum ServerAction {
     /// Start the embedding server (HTTP API and MCP)
     Start(StartArgs),
@@ -61,51 +61,191 @@ pub enum ServerAction {
     Restart(StartArgs),
 }
 
-#[derive(Args)]
+impl ServerAction {
+    pub fn augment_subcommands(cmd: Command) -> Command {
+        cmd
+            .subcommand(
+                Command::new("start")
+                    .about("Start the embedding server (HTTP API and MCP)")
+                    .alias("s")
+                    .subcommand_negates_reqs(true)
+                    .subcommand_precedence_over_arg(true)
+                    .arg_required_else_help(false)
+                    .subcommand(StartArgs::augment_args(Command::new("start")))
+            )
+            .subcommand(
+                Command::new("stop")
+                    .about("Stop the running server")
+                    .alias("x")
+            )
+            .subcommand(
+                Command::new("status")
+                    .about("Get server status")
+                    .alias("st")
+            )
+            .subcommand(
+                Command::new("restart")
+                    .about("Restart the server")
+                    .alias("r")
+                    .subcommand_negates_reqs(true)
+                    .subcommand_precedence_over_arg(true)
+                    .arg_required_else_help(false)
+                    .subcommand(StartArgs::augment_args(Command::new("restart")))
+            )
+    }
+
+    pub fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
+        match matches.subcommand() {
+            Some(("start", sub_matches)) => {
+                let start_args = StartArgs::from_arg_matches(sub_matches)?;
+                Ok(ServerAction::Start(start_args))
+            }
+            Some(("stop", _)) => Ok(ServerAction::Stop),
+            Some(("status", _)) => Ok(ServerAction::Status),
+            Some(("restart", sub_matches)) => {
+                let start_args = StartArgs::from_arg_matches(sub_matches)?;
+                Ok(ServerAction::Restart(start_args))
+            }
+            _ => Err(clap::Error::raw(
+                clap::error::ErrorKind::InvalidSubcommand,
+                "Invalid server subcommand\n"
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Args)]
 pub struct StartArgs {
     /// Port to bind the HTTP server
-    #[arg(long, default_value = "8080")]
+    #[arg(long)]
     pub port: u16,
-
+    
     /// Bind address
-    #[arg(long, default_value = "0.0.0.0")]
+    #[arg(long)]
     pub bind: String,
-
+    
     /// Unix socket path (mutually exclusive with bind)
-    #[arg(long, conflicts_with = "bind")]
     pub socket_path: Option<PathBuf>,
-
+    
     /// Models to load (comma-separated)
-    #[arg(long, value_parser = validate_models)]
+    #[arg(long)]
     pub models: Option<String>,
-
+    
     /// Default model to use
-    #[arg(long, default_value = "potion-32M", value_parser = validate_model_name)]
+    #[arg(long, default_value = "potion-32M")]
     pub default_model: String,
-
+    
     /// Enable MCP mode alongside HTTP
     #[arg(long)]
     pub mcp: bool,
-
+    
     /// Disable authentication
     #[arg(long)]
     pub auth_disabled: bool,
-
+    
     /// Run as daemon (detached process)
     #[arg(long)]
     pub daemon: bool,
-
+    
     /// PID file location for daemon mode
-    #[arg(long)]
     pub pid_file: Option<PathBuf>,
-
+    
     /// TLS certificate file path
-    #[arg(long)]
     pub tls_cert_path: Option<String>,
 
     /// TLS private key file path
-    #[arg(long)]
     pub tls_key_path: Option<String>,
+}
+
+impl StartArgs {
+    pub fn augment_args(cmd: Command) -> Command {
+        cmd
+            .arg(
+                Arg::new("port")
+                    .short('p')
+                    .long("port")
+                    .help("Port to bind the HTTP server")
+                    .default_value("8080")
+                    .value_parser(clap::value_parser!(u16))
+            )
+            .arg(
+                Arg::new("bind")
+                    .short('b')
+                    .long("bind")
+                    .help("Bind address")
+                    .default_value("0.0.0.0")
+            )
+            .arg(
+                Arg::new("socket_path")
+                    .long("socket-path")
+                    .help("Unix socket path (mutually exclusive with bind)")
+                    .conflicts_with("bind")
+            )
+            .arg(
+                Arg::new("models")
+                    .short('m')
+                    .long("models")
+                    .help("Models to load (comma-separated)")
+                    .value_parser(validate_models)
+            )
+            .arg(
+                Arg::new("default_model")
+                    .short('d')
+                    .long("default-model")
+                    .help("Default model to use")
+                    .default_value("potion-32M")
+                    .value_parser(validate_model_name)
+            )
+            .arg(
+                Arg::new("mcp")
+                    .long("mcp")
+                    .help("Enable MCP mode alongside HTTP")
+                    .action(ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("auth_disabled")
+                    .long("auth-disabled")
+                    .help("Disable authentication")
+                    .action(ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("daemon")
+                    .long("daemon")
+                    .help("Run as daemon (detached process)")
+                    .action(ArgAction::SetTrue)
+            )
+            .arg(
+                Arg::new("pid_file")
+                    .long("pid-file")
+                    .help("PID file location for daemon mode")
+            )
+            .arg(
+                Arg::new("tls_cert_path")
+                    .long("tls-cert-path")
+                    .help("TLS certificate file path")
+            )
+            .arg(
+                Arg::new("tls_key_path")
+                    .long("tls-key-path")
+                    .help("TLS private key file path")
+            )
+    }
+
+    pub fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
+        Ok(StartArgs {
+            port: *matches.get_one::<u16>("port").unwrap_or(&8080),
+            bind: matches.get_one::<String>("bind").unwrap_or(&"0.0.0.0".to_string()).clone(),
+            socket_path: matches.get_one::<String>("socket_path").map(PathBuf::from),
+            models: matches.get_one::<String>("models").cloned(),
+            default_model: matches.get_one::<String>("default_model").unwrap_or(&"potion-32M".to_string()).clone(),
+            mcp: matches.get_flag("mcp"),
+            auth_disabled: matches.get_flag("auth_disabled"),
+            daemon: matches.get_flag("daemon"),
+            pid_file: matches.get_one::<String>("pid_file").map(PathBuf::from),
+            tls_cert_path: matches.get_one::<String>("tls_cert_path").cloned(),
+            tls_key_path: matches.get_one::<String>("tls_key_path").cloned(),
+        })
+    }
 }/// Validate models string: comma-separated non-empty names
 fn validate_models(s: &str) -> Result<(), String> {
     if s.trim().is_empty() {
@@ -348,6 +488,10 @@ mod tests {
             "embed-tool",
             "server",
             "start",
+            "--port",
+            "8080",
+            "--bind",
+            "0.0.0.0",
             "--models",
             "model1,model2,model3",
             "--default-model",
@@ -361,6 +505,8 @@ mod tests {
             Commands::Server { action } => {
                 match action {
                     ServerAction::Start(args) => {
+                        assert_eq!(args.port, 8080);
+                        assert_eq!(args.bind, "0.0.0.0");
                         assert_eq!(args.models, Some("model1,model2,model3".to_string()));
                         assert_eq!(args.default_model, "model2");
                         assert!(args.mcp);

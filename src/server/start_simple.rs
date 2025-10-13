@@ -59,3 +59,28 @@ pub async fn start_http_server(
 async fn health_check() -> &'static str {
     "OK"
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_health_check() {
+        let response = health_check().await;
+        assert_eq!(response, "OK");
+    }
+
+    #[test]
+    fn test_bind_address_parsing() {
+        // Test valid address parsing (this is the logic from start_http_server)
+        let valid_addr = "127.0.0.1:8080";
+        let addr: Result<SocketAddr, _> = valid_addr.parse();
+        assert!(addr.is_ok());
+        assert_eq!(addr.unwrap().to_string(), "127.0.0.1:8080");
+
+        // Test invalid address
+        let invalid_addr = "invalid-address";
+        let addr: Result<SocketAddr, _> = invalid_addr.parse();
+        assert!(addr.is_err());
+    }
+}

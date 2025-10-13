@@ -112,6 +112,15 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
 - **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
+- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
+- **Unresolved import `governor::state::keyed::NotKeyed`**: Update the import to `governor::state::NotKeyed`.
+- **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
+- **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
+- **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
+- **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
+- **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
+- **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
+- **`E0614: type `std::option::Option<&mut HeaderMap>` cannot be dereferenced`**: In `src/server/limit.rs`, the line `*req.headers_mut() = headers;` is causing a compilation error because `req.headers_mut()` returns an `Option<&mut HeaderMap>`, and you cannot directly dereference and assign to it.
 
 **Key Log Messages**:
 
@@ -181,13 +190,14 @@ The project is now in a functional state for basic HTTP API and CLI operations. 
 - **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
 - **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
+- **`E0614: type `std::option::Option<&mut HeaderMap>` cannot be dereferenced`**: In `src/server/limit.rs`, the line `*req.headers_mut() = headers;` is causing a compilation error because `req.headers_mut()` returns an `Option<&mut HeaderMap>`, and you cannot directly dereference and assign to it.
 
 ## AI CODING AGENT GUIDELINES
 
 To ensure AI coding agents are immediately productive, consider the following:
 
 - **Big Picture Architecture:** The server is designed around serving embeddings via HTTP API and MCP. The core components include `src/main.rs` (CLI entrypoint), `src/cli/` (CLI implementation), `src/server/mod.rs` (HTTP server), `src/server/api_keys.rs` (API key management), and `src/utils/mod.rs` (model distillation). Understand how these components interact to provide embedding services.
-- **Critical Developer Workflows:** Use `cargo run` to start the server. API keys can be obtained via `curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'`. Embeddings can be generated using `curl -X POST http://localhost:8080/v1/embeddings -H "Authorization: Bearer embed-YOUR-API-KEY" -d '{"input":["Hello world"],"model":"potion-32M"}`.
+- **Critical Developer Workflows:** Use `cargo run` to start the server. API keys can be obtained via `curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'`. Embeddings can be generated using `curl -X POST http://localhost:8080/v1/embeddings -H "Authorization: Bearer embed-YOUR-API-KEY" -d '{"input":["Hello world"],"model":"potion-32M}`.
 - **Project-Specific Conventions:** The project adapts proven patterns, including authentication, rate limiting, and CLI design. Pay attention to the single-instance control of the CLI and the TOML configuration files. The project also uses auto-versioning for files, graceful model loading fallbacks, and integrates with an external Python CLI.
 - **Integration Points:** The server integrates with the `model2vec` Python CLI for model distillation. API key authentication is a crucial integration point.
 

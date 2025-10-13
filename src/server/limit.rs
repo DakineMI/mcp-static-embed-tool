@@ -185,3 +185,111 @@ pub async fn api_key_rate_limit_middleware(
 
     next.run(req).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, HeaderMap, HeaderValue};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use tower::ServiceExt;
+
+    #[test]
+    fn test_robust_ip_key_extractor_x_forwarded_for() {
+        let extractor = RobustIpKeyExtractor;
+        
+        // Test X-Forwarded-For header
+        let req = Request::builder()
+            .uri("http://example.com")
+            .header("X-Forwarded-For", "192.168.1.100, 10.0.0.1")
+            .body(())
+            .unwrap();
+        
+        let key = extractor.extract(&req).unwrap();
+        assert_eq!(key, "192.168.1.100");
+    }
+
+    #[test]
+    fn test_robust_ip_key_extractor_multiple_headers() {
+        let extractor = RobustIpKeyExtractor;
+        
+        // Test X-Real-IP
+        let req = Request::builder()
+            .uri("http://example.com")
+            .header("X-Real-IP", "10.0.0.1")
+            .body(())
+            .unwrap();
+        
+        let key = extractor.extract(&req).unwrap();
+        assert_eq!(key, "10.0.0.1");
+        
+        // Test X-Client-IP
+        let req2 = Request::builder()
+            .uri("http://example.com")
+            .header("X-Client-IP", "172.16.0.1")
+            .body(())
+            .unwrap();
+        
+        let key2 = extractor.extract(&req2).unwrap();
+        assert_eq!(key2, "172.16.0.1");
+    }
+
+    #[test]
+    fn test_robust_ip_key_extractor_socket_addr() {
+        let extractor = RobustIpKeyExtractor;
+        
+        // No headers, should fall back to socket address
+        let socket_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
+        let mut req = Request::builder()
+            .uri("http://example.com")
+            .body(())
+            .unwrap();
+        
+        // Insert socket address into extensions
+        req.extensions_mut().insert(socket_addr);
+        
+        let key = extractor.extract(&req).unwrap();
+        assert_eq!(key, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_robust_ip_key_extractor_fallback_to_unknown() {
+        let extractor = RobustIpKeyExtractor;
+        let req = Request::builder().uri("http://example.com").body(()).unwrap();
+        
+        // No headers and no socket address
+        let key = extractor.extract(&req).unwrap();
+        assert_eq!(key, "unknown");
+    }
+
+    #[test]
+    fn test_api_key_rate_limiter_creation() {
+        let limiter = ApiKeyRateLimiter::new();
+        assert!(limiter.limiters.try_read().is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_rate_limiter_get_or_create() {
+        let limiter = ApiKeyRateLimiter::new();
+        
+        // First call should create a new limiter
+        let limiter1 = limiter.get_or_create_limiter("test-key", 60).await;
+        assert!(limiter1.check().is_ok()); // Should allow the request
+        
+        // Second call should return the same limiter
+        let limiter2 = limiter.get_or_create_limiter("test-key", 60).await;
+        assert!(Arc::ptr_eq(&limiter1, &limiter2));
+    }
+
+    #[tokio::test]
+    async fn test_api_key_rate_limiter_different_configs() {
+        let limiter = ApiKeyRateLimiter::new();
+        
+        // Create limiters with different rates
+        let limiter1 = limiter.get_or_create_limiter("key1", 60).await; // 1 req/sec
+        let limiter2 = limiter.get_or_create_limiter("key2", 120).await; // 2 req/sec
+        
+        // They should be different instances
+        assert!(!Arc::ptr_eq(&limiter1, &limiter2));
+    }
+}

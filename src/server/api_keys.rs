@@ -428,17 +428,18 @@ mod sha256 {
 mod tests {
     use super::*;
     use tokio;
+    use tempfile::TempDir;
 
-    fn test_manager() -> (ApiKeyManager, String) {
-        use uuid::Uuid;
-        let db_path = format!("./test_api_keys_{}.db", Uuid::new_v4());
+    fn test_manager() -> (ApiKeyManager, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_api_keys.db").to_str().unwrap().to_string();
         let manager = ApiKeyManager::new(&db_path).unwrap();
-        (manager, db_path)
+        (manager, temp_dir)
     }
 
     #[tokio::test]
     async fn test_api_key_generation_and_validation() {
-        let (manager, db_path) = test_manager();
+        let (manager, _temp_dir) = test_manager();
         
         let request = ApiKeyRequest {
             client_name: "test-client".to_string(),
@@ -460,23 +461,20 @@ mod tests {
         assert!(key_info.active);
         assert!(key_info.last_used.is_some());
 
-        // Cleanup
-        drop(manager);
-        let _ = std::fs::remove_file(&db_path);
+        // TempDir will be automatically cleaned up
     }
 
     #[tokio::test]
     async fn test_invalid_api_key() {
-        let (manager, db_path) = test_manager();
+        let (manager, _temp_dir) = test_manager();
         let result = manager.validate_api_key("invalid-key").await;
         assert!(result.is_none());
-        drop(manager);
-        let _ = std::fs::remove_file(&db_path);
+        // TempDir will be automatically cleaned up
     }
 
     #[tokio::test]
     async fn test_api_key_revocation() {
-        let (manager, db_path) = test_manager();
+        let (manager, _temp_dir) = test_manager();
         
         let request = ApiKeyRequest {
             client_name: "test-client".to_string(),
@@ -494,7 +492,6 @@ mod tests {
         let result = manager.validate_api_key(&response.api_key).await;
         assert!(result.is_none());
         
-        drop(manager);
-        let _ = std::fs::remove_file(&db_path);
+        // TempDir will be automatically cleaned up
     }
 }

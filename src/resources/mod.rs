@@ -90,3 +90,88 @@ pub fn list_resources() -> Vec<Resource> {
 pub fn read_resource(uri: &str) -> Option<ReadResourceResult> {
     ResourceRegistry::find_by_uri(uri).map(|provider| provider.read())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_instructions_resource_metadata() {
+        let resource = InstructionsResource;
+
+        assert_eq!(resource.uri(), "embedtool://instructions");
+        assert_eq!(resource.name(), "Static Embedding Tool Instructions");
+        assert_eq!(resource.mime_type(), "text/markdown");
+        assert_eq!(resource.description(), "Full instructions and guidelines for the Static Embedding Tool MCP server");
+
+        // Content should not be empty
+        let content = resource.content();
+        assert!(!content.is_empty());
+        assert!(content.contains("#")); // Should contain markdown headers
+    }
+
+    #[test]
+    fn test_instructions_resource_meta() {
+        let resource = InstructionsResource;
+        let meta = resource.meta();
+        
+        assert_eq!(meta.raw.uri, "embedtool://instructions");
+        assert_eq!(meta.raw.name, "Static Embedding Tool Instructions");
+        assert_eq!(meta.raw.mime_type, Some("text/markdown".to_string()));
+        assert_eq!(meta.raw.description, Some("Full instructions and guidelines for the Static Embedding Tool MCP server".to_string()));
+        assert!(meta.raw.size.is_some());
+        assert!(meta.raw.size.unwrap() > 0);
+    }    #[test]
+    fn test_instructions_resource_read() {
+        let resource = InstructionsResource;
+        let result = resource.read();
+
+        assert_eq!(result.contents.len(), 1);
+        // Since we can't easily pattern match on the ResourceContents enum
+        // without knowing its exact structure, we'll just verify the result is created
+        assert!(!result.contents.is_empty());
+    }
+
+    #[test]
+    fn test_resource_registry_get_providers() {
+        let providers = ResourceRegistry::get_providers();
+        assert_eq!(providers.len(), 1);
+
+        // Should contain InstructionsResource
+        let provider = &providers[0];
+        assert_eq!(provider.uri(), "embedtool://instructions");
+    }
+
+    #[test]
+    fn test_resource_registry_find_by_uri() {
+        // Found
+        let provider = ResourceRegistry::find_by_uri("embedtool://instructions");
+        assert!(provider.is_some());
+        assert_eq!(provider.unwrap().uri(), "embedtool://instructions");
+
+        // Not found
+        let not_found = ResourceRegistry::find_by_uri("nonexistent://uri");
+        assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_list_resources() {
+        let resources = list_resources();
+        assert_eq!(resources.len(), 1);
+        
+        let resource = &resources[0];
+        assert_eq!(resource.raw.uri, "embedtool://instructions");
+        assert_eq!(resource.raw.name, "Static Embedding Tool Instructions");
+    }    #[test]
+    fn test_read_resource() {
+        // Found
+        let result = read_resource("embedtool://instructions");
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.contents.len(), 1);
+
+        // Not found
+        let not_found = read_resource("nonexistent://uri");
+        assert!(not_found.is_none());
+    }
+}

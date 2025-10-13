@@ -12,7 +12,7 @@ use tracing::{debug, info};
 // Global metrics
 // static EMBEDDING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EmbedParams {
     #[schemars(description = "Text input to generate embeddings for")]
     pub input: String,
@@ -20,7 +20,7 @@ pub struct EmbedParams {
     pub model: Option<String>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BatchEmbedParams {
     #[schemars(description = "Array of text inputs to generate embeddings for")]
     pub inputs: Vec<String>,
@@ -28,16 +28,16 @@ pub struct BatchEmbedParams {
     pub model: Option<String>,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelListParams {}
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelInfoParams {
     #[schemars(description = "Name of the model to get information about")]
     pub model: String,
 }
 
-#[derive(Deserialize, schemars::JsonSchema)]
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ModelDistillParams {
     #[schemars(description = "Input model name or path")]
     pub input_model: String,
@@ -593,4 +593,155 @@ impl EmbeddingService {
 // Since MCP tools are disabled, we implement a minimal ServerHandler
 impl rmcp::handler::server::ServerHandler for EmbeddingService {
     // Minimal implementation - no tools required
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embedding_service_creation() {
+        let connection_id = "test-conn-123".to_string();
+        let service = EmbeddingService::new(connection_id.clone());
+        
+        assert_eq!(service.connection_id, connection_id);
+        assert!(service.models.try_lock().is_ok());
+        assert!(service.created_at.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn test_initialize_connection() {
+        let service = EmbeddingService::new("test-conn".to_string());
+        let result = service.initialize_connection().await;
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_embed_params_serialization() {
+        let params = EmbedParams {
+            input: "Hello world".to_string(),
+            model: Some("potion-32M".to_string()),
+        };
+        
+        // Test that it can be serialized to JSON
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("Hello world"));
+        assert!(json.contains("potion-32M"));
+        
+        // Test deserialization
+        let deserialized: EmbedParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.input, "Hello world");
+        assert_eq!(deserialized.model, Some("potion-32M".to_string()));
+    }
+
+    #[test]
+    fn test_batch_embed_params_serialization() {
+        let params = BatchEmbedParams {
+            inputs: vec!["Hello".to_string(), "world".to_string()],
+            model: None,
+        };
+        
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("Hello"));
+        assert!(json.contains("world"));
+        
+        let deserialized: BatchEmbedParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.inputs.len(), 2);
+        assert_eq!(deserialized.model, None);
+    }
+
+    #[test]
+    fn test_model_list_params() {
+        let params = ModelListParams {};
+        let json = serde_json::to_string(&params).unwrap();
+        // Should serialize to empty object
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn test_model_info_params() {
+        let params = ModelInfoParams {
+            model: "potion-32M".to_string(),
+        };
+        
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("potion-32M"));
+        
+        let deserialized: ModelInfoParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.model, "potion-32M");
+    }
+
+    #[test]
+    fn test_model_distill_params() {
+        let params = ModelDistillParams {
+            input_model: "large-model".to_string(),
+            output_name: "distilled-model".to_string(),
+            dimensions: Some(128),
+        };
+        
+        let json = serde_json::to_string(&params).unwrap();
+        assert!(json.contains("large-model"));
+        assert!(json.contains("distilled-model"));
+        assert!(json.contains("128"));
+        
+        let deserialized: ModelDistillParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.input_model, "large-model");
+        assert_eq!(deserialized.output_name, "distilled-model");
+        assert_eq!(deserialized.dimensions, Some(128));
+    }
+
+    #[test]
+    fn test_model_distill_params_defaults() {
+        let params = ModelDistillParams {
+            input_model: "input".to_string(),
+            output_name: "output".to_string(),
+            dimensions: None,
+        };
+        
+        let json = serde_json::to_string(&params).unwrap();
+        let deserialized: ModelDistillParams = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.dimensions, None);
+    }
+
+    #[test]
+    fn test_embedding_response_structure() {
+        let response = EmbeddingResponse {
+            embedding: vec![0.1, 0.2, 0.3],
+            model: "test-model".to_string(),
+            dimensions: 3,
+            processing_time_ms: 150,
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("test-model"));
+        assert!(json.contains("150"));
+        assert!(json.contains("0.1"));
+        
+        let deserialized: EmbeddingResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.embedding.len(), 3);
+        assert_eq!(deserialized.model, "test-model");
+        assert_eq!(deserialized.dimensions, 3);
+        assert_eq!(deserialized.processing_time_ms, 150);
+    }
+
+    #[test]
+    fn test_batch_embedding_response_structure() {
+        let response = BatchEmbeddingResponse {
+            embeddings: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
+            model: "batch-model".to_string(),
+            dimensions: 2,
+            processing_time_ms: 200,
+            input_count: 2,
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("batch-model"));
+        assert!(json.contains("200"));
+        assert!(json.contains("2"));
+        
+        let deserialized: BatchEmbeddingResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.embeddings.len(), 2);
+        assert_eq!(deserialized.input_count, 2);
+        assert_eq!(deserialized.processing_time_ms, 200);
+    }
 }

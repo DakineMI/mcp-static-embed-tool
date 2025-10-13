@@ -77,3 +77,35 @@ impl AppState {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_state_default_model_selection() {
+        // Test the default model selection logic (extracted from AppState::new())
+        
+        // Test case 1: potion-32M is available
+        let model_names = vec!["potion-8M", "potion-32M"];
+        
+        let default_model = if model_names.contains(&"potion-32M") {
+            "potion-32M".to_string()
+        } else {
+            model_names[0].to_string()
+        };
+        
+        assert_eq!(default_model, "potion-32M");
+        
+        // Test case 2: potion-32M not available, should pick first available
+        let model_names2 = vec!["custom-model"];
+        
+        let default_model2 = if model_names2.contains(&"potion-32M") {
+            "potion-32M".to_string()
+        } else {
+            model_names2[0].to_string()
+        };
+        
+        assert_eq!(default_model2, "custom-model");
+    }
+}

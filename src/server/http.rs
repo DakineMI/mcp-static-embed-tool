@@ -4,3 +4,14 @@ use axum::http::StatusCode;
 pub async fn health() -> StatusCode {
     StatusCode::OK
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_health_endpoint() {
+        let status = health().await;
+        assert_eq!(status, StatusCode::OK);
+    }
+}
