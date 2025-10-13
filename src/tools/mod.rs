@@ -1,24 +1,16 @@
-use anyhow::Result;
-use metrics::counter;
-use model2vec_rs::model::StaticModel;
 use rmcp::{
     ErrorData as McpError,
-    handler::server::router::tool::ToolRouter,
-    model::{CallToolResult, Content},
-    tool, tool_router,
+    // tool, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
-
-use crate::utils;
+use tracing::{debug, info};
 
 // Global metrics
-static EMBEDDING_COUNTER: AtomicU64 = AtomicU64::new(0);
+// static EMBEDDING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct EmbedParams {
@@ -77,14 +69,14 @@ pub struct EmbeddingService {
     /// Connection ID for tracking this client session
     pub connection_id: String,
     /// Available Model2Vec models
-    pub models: Arc<Mutex<HashMap<String, model2vec_rs::StaticModel>>>,
+    pub models: Arc<Mutex<HashMap<String, model2vec_rs::model::StaticModel>>>,
     /// Timestamp when this service was created
     pub created_at: std::time::Instant,
-    /// Router containing all available tools
-    pub tool_router: ToolRouter<Self>,
+    // /// Router containing all available tools
+    // pub tool_router: ToolRouter<Self>,
 }
 
-#[tool_router]
+// #[tool_router]
 impl EmbeddingService {
     /// Create a new EmbeddingService instance
     pub fn new(connection_id: String) -> Self {
@@ -93,7 +85,7 @@ impl EmbeddingService {
             connection_id,
             models: Arc::new(Mutex::new(HashMap::new())),
             created_at: Instant::now(),
-            tool_router: Self::tool_router(),
+            // tool_router: Self::tool_router(),
         }
     }
 
@@ -106,25 +98,26 @@ impl EmbeddingService {
     }
 
     /// Generate embeddings for a single text input
-    #[tool(description = r#"
-Generate embeddings for a single text input using Model2Vec.
+    // #[tool(description = r#"
+    // Generate embeddings for a single text input using Model2Vec.
 
-This function generates vector embeddings for the provided text using the specified 
-Model2Vec model. The embeddings can be used for semantic search, similarity comparison, 
-clustering, and other machine learning tasks.
+    // This function generates vector embeddings for the provided text using the specified 
+    // Model2Vec model. The embeddings can be used for semantic search, similarity comparison, 
+    // clustering, and other machine learning tasks.
 
-Available models include:
-- potion-8M: Lightweight model with 8M parameters
-- potion-32M: Balanced model with 32M parameters (default)
-- code-distilled: Specialized model for code embeddings
+    // Available models include:
+    // - potion-8M: Lightweight model with 8M parameters
+    // - potion-32M: Balanced model with 32M parameters (default)
+    // - code-distilled: Specialized model for code embeddings
 
-Examples:
-- embed("Hello world")  # Uses default potion-32M model
-- embed("Hello world", Some("potion-8M"))  # Uses specific model
-- embed("def hello(): return 'world'", Some("code-distilled"))  # Code embedding
-"#)]
-    pub async fn embed(&self, params: Parameters<EmbedParams>) -> Result<CallToolResult, McpError> {
-        let EmbedParams { input, model } = params.0;
+    // Examples:
+    // - embed("Hello world")  # Uses default potion-32M model
+    // - embed("Hello world", Some("potion-8M"))  # Uses specific model
+    // - embed("def hello(): return 'world'", Some("code-distilled"))  # Code embedding
+    // "#)]
+    /*
+    pub async fn embed(&self, params: EmbedParams) -> Result<CallToolResult, McpError> {
+        let EmbedParams { input, model } = params;
         let start_time = Instant::now();
         
         counter!("embedtool.tools.embed").increment(1);
@@ -157,31 +150,35 @@ Examples:
                 )
             })?;
 
-        match model_instance.embed(&input) {
-            Ok(embedding) => {
-                let duration = start_time.elapsed();
-                let dimensions = embedding.len();
-                
-                let response = EmbeddingResponse {
-                    embedding,
-                    model: model_name.clone(),
-                    dimensions,
-                    processing_time_ms: duration.as_millis() as u64,
-                };
+        match model_instance.encode(&[input.clone()]) {
+            Ok(mut embeddings) => {
+                if let Some(embedding) = embeddings.pop() {
+                    let duration = start_time.elapsed();
+                    let dimensions = embedding.len();
 
-                info!(
-                    connection_id = %self.connection_id,
-                    embedding_id = embedding_id,
-                    model = %model_name,
-                    dimensions = dimensions,
-                    duration_ms = duration.as_millis(),
-                    "Successfully generated embedding"
-                );
+                    let response = EmbeddingResponse {
+                        embedding,
+                        model: model_name.clone(),
+                        dimensions,
+                        processing_time_ms: duration.as_millis() as u64,
+                    };
 
-                let json_response = serde_json::to_string_pretty(&response)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                
-                Ok(CallToolResult::success(vec![Content::text(json_response)]))
+                    info!(
+                        connection_id = %self.connection_id,
+                        embedding_id = embedding_id,
+                        model = %model_name,
+                        dimensions = dimensions,
+                        duration_ms = duration.as_millis(),
+                        "Successfully generated embedding"
+                    );
+
+                    let json_response = serde_json::to_string_pretty(&response)
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                    Ok(CallToolResult::success(vec![Content::text(json_response)]))
+                } else {
+                    Err(McpError::internal_error("No embedding generated".to_string(), None))
+                }
             }
             Err(e) => {
                 let duration = start_time.elapsed();
@@ -204,25 +201,27 @@ Examples:
             }
         }
     }
+    */
 
     /// Generate embeddings for multiple text inputs in batch
-    #[tool(description = r#"
-Generate embeddings for multiple text inputs in batch using Model2Vec.
+    // #[tool(description = r#"
+    // Generate embeddings for multiple text inputs in batch using Model2Vec.
 
-This function generates vector embeddings for an array of text inputs using the 
-specified Model2Vec model. This is more efficient than calling embed multiple times 
-for processing multiple texts.
+    // This function generates vector embeddings for an array of text inputs using the 
+    // specified Model2Vec model. This is more efficient than calling embed multiple times 
+    // for processing multiple texts.
 
-The batch processing maintains the order of inputs, so the returned embeddings array 
-corresponds to the input array by index.
+    // The batch processing maintains the order of inputs, so the returned embeddings array 
+    // corresponds to the input array by index.
 
-Examples:
-- batch_embed(["Hello world", "Goodbye world"])  # Uses default potion-32M model
-- batch_embed(["Hello", "World"], Some("potion-8M"))  # Uses specific model
-- batch_embed(["def hello():", "class World:"], Some("code-distilled"))  # Code embeddings
-"#)]
-    pub async fn batch_embed(&self, params: Parameters<BatchEmbedParams>) -> Result<CallToolResult, McpError> {
-        let BatchEmbedParams { inputs, model } = params.0;
+    // Examples:
+    // - batch_embed(["Hello world", "Goodbye world"])  # Uses default potion-32M model
+    // - batch_embed(["Hello", "World"], Some("potion-8M"))  # Uses specific model
+    // - batch_embed(["def hello():", "class World:"], Some("code-distilled"))  # Code embeddings
+    // "#)]
+    /*
+    pub async fn batch_embed(&self, params: BatchEmbedParams) -> Result<CallToolResult, McpError> {
+        let BatchEmbedParams { inputs, model } = params;
         let start_time = Instant::now();
         
         counter!("embedtool.tools.batch_embed").increment(1);
@@ -255,78 +254,71 @@ Examples:
                 )
             })?;
 
-        let mut embeddings = Vec::with_capacity(inputs.len());
-        let mut dimensions = 0;
-        
-        for (idx, input) in inputs.iter().enumerate() {
-            match model_instance.embed(input) {
-                Ok(embedding) => {
-                    if dimensions == 0 {
-                        dimensions = embedding.len();
-                    }
-                    embeddings.push(embedding);
-                }
-                Err(e) => {
-                    let duration = start_time.elapsed();
-                    
-                    error!(
-                        connection_id = %self.connection_id,
-                        embedding_id = embedding_id,
-                        model = %model_name,
-                        input_index = idx,
-                        duration_ms = duration.as_millis(),
-                        error = %e,
-                        "Failed to generate embedding for input at index {}"
-                    , idx);
-                    
-                    counter!("embedtool.errors.batch_embed").increment(1);
-                    
-                    return Err(McpError::internal_error(
-                        format!("Failed to generate embedding for input at index {}: {}", idx, e),
-                        None,
-                    ));
-                }
+        match model_instance.encode(&inputs) {
+            Ok(batch_embeddings) => {
+                let duration = start_time.elapsed();
+                let dimensions = batch_embeddings.first().map(|e| e.len()).unwrap_or(0);
+
+                let response = BatchEmbeddingResponse {
+                    embeddings: batch_embeddings,
+                    model: model_name.clone(),
+                    dimensions,
+                    processing_time_ms: duration.as_millis() as u64,
+                    input_count: inputs.len(),
+                };
+
+                info!(
+                    connection_id = %self.connection_id,
+                    embedding_id = embedding_id,
+                    model = %model_name,
+                    input_count = inputs.len(),
+                    dimensions = dimensions,
+                    duration_ms = duration.as_millis(),
+                    "Successfully generated batch embeddings"
+                );
+
+                let json_response = serde_json::to_string_pretty(&response)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+                Ok(CallToolResult::success(vec![Content::text(json_response)]))
+            }
+            Err(e) => {
+                let duration = start_time.elapsed();
+
+                error!(
+                    connection_id = %self.connection_id,
+                    embedding_id = embedding_id,
+                    model = %model_name,
+                    input_count = inputs.len(),
+                    duration_ms = duration.as_millis(),
+                    error = %e,
+                    "Failed to generate batch embeddings"
+                );
+
+                counter!("embedtool.errors.batch_embed").increment(1);
+
+                Err(McpError::internal_error(
+                    format!("Failed to generate batch embeddings: {}", e),
+                    None,
+                ))
             }
         }
-
-        let duration = start_time.elapsed();
-        
-        let response = BatchEmbeddingResponse {
-            embeddings,
-            model: model_name.clone(),
-            dimensions,
-            processing_time_ms: duration.as_millis() as u64,
-            input_count: inputs.len(),
-        };
-
-        info!(
-            connection_id = %self.connection_id,
-            embedding_id = embedding_id,
-            model = %model_name,
-            input_count = inputs.len(),
-            dimensions = dimensions,
-            duration_ms = duration.as_millis(),
-            "Successfully generated batch embeddings"
-        );
-
-        let json_response = serde_json::to_string_pretty(&response)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        
-        Ok(CallToolResult::success(vec![Content::text(json_response)]))
     }
+    */
 
     /// List available embedding models
-    #[tool(description = r#"
-List available embedding models.
+    // #[tool(description = r#"
+    // List available embedding models.
 
-This function returns information about all available Model2Vec models that can be 
-used for generating embeddings. Each model has different characteristics in terms 
-of size, performance, and specialization.
+    // This function returns information about all available Model2Vec models that can be 
+    // used for generating embeddings. Each model has different characteristics in terms 
+    // of size, performance, and specialization.
 
-The response includes model names, dimensions, and other metadata to help you choose 
-the right model for your use case.
-"#)]
-    pub async fn list_models(&self, _params: Parameters<ModelListParams>) -> Result<CallToolResult, McpError> {
+    // The response includes model names, dimensions, and other metadata to help you choose 
+    // the right model for your use case.
+    // "#)]
+    /*
+    pub async fn list_models(&self, _params: ModelListParams) -> Result<CallToolResult, McpError> {
         let start_time = Instant::now();
         
         counter!("embedtool.tools.list_models").increment(1);
@@ -340,8 +332,8 @@ the right model for your use case.
         
         let mut models_info = Vec::new();
         for (name, model) in models_guard.iter() {
-            let dimensions = match model.embed("test") {
-                Ok(embedding) => embedding.len(),
+            let dimensions = match model.encode(&["test".to_string()]) {
+                Ok(embeddings) => embeddings.first().map(|e| e.len()).unwrap_or(0),
                 Err(_) => 0,
             };
             
@@ -372,20 +364,22 @@ the right model for your use case.
             result.to_string(),
         )]))
     }
+    */
 
     /// Get detailed information about a specific model
-    #[tool(description = r#"
-Get detailed information about a specific embedding model.
+    // #[tool(description = r#"
+    // Get detailed information about a specific embedding model.
 
-This function returns detailed information about a specific Model2Vec model, including 
-its dimensions, capabilities, and current status.
+    // This function returns detailed information about a specific Model2Vec model, including 
+    // its dimensions, capabilities, and current status.
 
-Examples:
-- model_info("potion-32M")  # Get info about the default model
-- model_info("code-distilled")  # Get info about the code model
-"#)]
-    pub async fn model_info(&self, params: Parameters<ModelInfoParams>) -> Result<CallToolResult, McpError> {
-        let ModelInfoParams { model: model_name } = params.0;
+    // Examples:
+    // - model_info("potion-32M")  # Get info about the default model
+    // - model_info("code-distilled")  # Get info about the code model
+    // "#)]
+    /*
+    pub async fn model_info(&self, params: ModelInfoParams) -> Result<CallToolResult, McpError> {
+        let ModelInfoParams { model: model_name } = params;
         let start_time = Instant::now();
         
         counter!("embedtool.tools.model_info").increment(1);
@@ -414,8 +408,8 @@ Examples:
                 )
             })?;
 
-        let dimensions = match model_instance.embed("test") {
-            Ok(embedding) => embedding.len(),
+        let dimensions = match model_instance.encode(&["test".to_string()]) {
+            Ok(embeddings) => embeddings.first().map(|e| e.len()).unwrap_or(0),
             Err(e) => {
                 error!(
                     connection_id = %self.connection_id,
@@ -457,32 +451,34 @@ Examples:
             result.to_string(),
         )]))
     }
+    */
 
     /// Distill a new Model2Vec model from an existing model
-    #[tool(description = r#"
-Distill a new Model2Vec model from an existing model using PCA compression.
+    // #[tool(description = r#"
+    // Distill a new Model2Vec model from an existing model using PCA compression.
 
-This function creates a new compressed Model2Vec model using PCA dimensionality 
-reduction. This is useful for creating smaller, faster models for deployment while 
-maintaining most of the semantic quality.
+    // This function creates a new compressed Model2Vec model using PCA dimensionality 
+    // reduction. This is useful for creating smaller, faster models for deployment while 
+    // maintaining most of the semantic quality.
 
-The distillation process:
-1. Loads the source model
-2. Applies PCA to reduce dimensions 
-3. Saves the new model with the specified name
-4. Loads the new model into the service
+    // The distillation process:
+    // 1. Loads the source model
+    // 2. Applies PCA to reduce dimensions 
+    // 3. Saves the new model with the specified name
+    // 4. Loads the new model into the service
 
-Examples:
-- distill_model("sentence-transformers/all-MiniLM-L6-v2", "my-mini-model")  # Default 128 dims
-- distill_model("microsoft/codebert-base", "code-128", Some(128))  # Custom dimensions
-- distill_model("potion-32M", "potion-64", Some(64))  # Compress existing model
-"#)]
-    pub async fn distill_model(&self, params: Parameters<ModelDistillParams>) -> Result<CallToolResult, McpError> {
+    // Examples:
+    // - distill_model("sentence-transformers/all-MiniLM-L6-v2", "my-mini-model")  # Default 128 dims
+    // - distill_model("microsoft/codebert-base", "code-128", Some(128))  # Custom dimensions
+    // - distill_model("potion-32M", "potion-64", Some(64))  # Compress existing model
+    // "#)]
+    /*
+    pub async fn distill_model(&self, params: ModelDistillParams) -> Result<CallToolResult, McpError> {
         let ModelDistillParams { 
             input_model, 
             output_name, 
             dimensions 
-        } = params.0;
+        } = params;
         let start_time = Instant::now();
         
         counter!("embedtool.tools.distill_model").increment(1);
@@ -511,7 +507,7 @@ Examples:
                     "Successfully distilled model"
                 );
 
-                match model2vec_rs::StaticModel::from_file(&output_path) {
+                match model2vec_rs::model::StaticModel::from_pretrained(&output_path, None, None, None) {
                     Ok(model) => {
                         let mut models_guard = self.models.lock().await;
                         models_guard.insert(output_name.clone(), model);
@@ -567,6 +563,7 @@ Examples:
             }
         }
     }
+    */
 
     /// Add a model to the service by loading it from a file path
     pub async fn load_model(&self, name: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -577,7 +574,7 @@ Examples:
             "Loading model into service"
         );
 
-        let model = model2vec_rs::StaticModel::from_file(path)?;
+        let model = model2vec_rs::model::StaticModel::from_pretrained(path, None, None, None)?;
         
         let mut models_guard = self.models.lock().await;
         models_guard.insert(name.to_string(), model);
@@ -592,11 +589,8 @@ Examples:
     }
 }
 
-// TODO: Fix ServerHandler trait implementation
-// impl ServerHandler for EmbeddingService {
-//     type ToolRouter = ToolRouter<Self>;
-
-//     fn tools(&self) -> &Self::ToolRouter {
-//         &self.tool_router
-//     }
-// }
+// TODO: Fix ServerHandler trait implementation - disabled for now
+// Since MCP tools are disabled, we implement a minimal ServerHandler
+impl rmcp::handler::server::ServerHandler for EmbeddingService {
+    // Minimal implementation - no tools required
+}

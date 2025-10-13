@@ -80,7 +80,22 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
         println!("Authentication: disabled");
     }
 
-    let config = if let Some(socket_path) = args.socket_path {
+    let config = if args.mcp {
+        // MCP mode: stdio
+        ServerConfig {
+            server_url: "stdio://-".to_string(),
+            bind_address: None,
+            socket_path: None,
+            auth_disabled: args.auth_disabled,
+            registration_enabled: !args.auth_disabled,
+            rate_limit_rps: 100,
+            rate_limit_burst: 200,
+            api_key_db_path: "./data/api_keys.db".to_string(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            enable_mcp: args.mcp,
+        }
+    } else if let Some(socket_path) = args.socket_path {
         ServerConfig {
             server_url: format!("unix://{}", socket_path.display()),
             bind_address: None,
@@ -92,6 +107,7 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
             api_key_db_path: "./data/api_keys.db".to_string(),
             tls_cert_path: None,
             tls_key_path: None,
+            enable_mcp: args.mcp,
         }
     } else {
         let addr = format!("{}:{}", args.bind, args.port);
@@ -106,6 +122,7 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
             api_key_db_path: "./data/api_keys.db".to_string(),
             tls_cert_path: args.tls_cert_path,
             tls_key_path: args.tls_key_path,
+            enable_mcp: args.mcp,
         }
     };
 

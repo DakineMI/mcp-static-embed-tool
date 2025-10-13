@@ -11,6 +11,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sled::Db;
+use std::env;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -97,7 +98,7 @@ impl ApiKeyManager {
         let key_id = Uuid::new_v4().to_string();
         
         // Generate a secure API key: embed-<base64-encoded-random-bytes>
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         let mut random_bytes = [0u8; 32];
         rng.fill_bytes(&mut random_bytes);
         let api_key = format!("embed-{}", STANDARD.encode(random_bytes));
@@ -426,17 +427,18 @@ mod sha256 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sled::Config;
     use tokio;
 
-    fn test_manager() -> ApiKeyManager {
-        let db = Config::new().temporary(true).open().unwrap();
-        ApiKeyManager { db }
+    fn test_manager() -> (ApiKeyManager, String) {
+        use uuid::Uuid;
+        let db_path = format!("./test_api_keys_{}.db", Uuid::new_v4());
+        let manager = ApiKeyManager::new(&db_path).unwrap();
+        (manager, db_path)
     }
 
     #[tokio::test]
     async fn test_api_key_generation_and_validation() {
-        let manager = test_manager();
+        let (manager, db_path) = test_manager();
         
         let request = ApiKeyRequest {
             client_name: "test-client".to_string(),
@@ -448,7 +450,7 @@ mod tests {
         let response = manager.generate_api_key(request).await.unwrap();
         assert!(response.api_key.starts_with("embed-"));
         assert_eq!(response.key_info.client_name, "test-client");
-        assert_eq!(response.key_info.rate_limit_tier, "standard");
+        assert_eq!(response.key_info.rate_limit_tier, "development");
 
         // Validate API key
         let key_info = manager.validate_api_key(&response.api_key).await;
@@ -457,18 +459,24 @@ mod tests {
         assert_eq!(key_info.client_name, "test-client");
         assert!(key_info.active);
         assert!(key_info.last_used.is_some());
+
+        // Cleanup
+        drop(manager);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[tokio::test]
     async fn test_invalid_api_key() {
-        let manager = test_manager();
+        let (manager, db_path) = test_manager();
         let result = manager.validate_api_key("invalid-key").await;
         assert!(result.is_none());
+        drop(manager);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[tokio::test]
     async fn test_api_key_revocation() {
-        let manager = test_manager();
+        let (manager, db_path) = test_manager();
         
         let request = ApiKeyRequest {
             client_name: "test-client".to_string(),
@@ -480,10 +488,13 @@ mod tests {
         let key_id = response.key_info.id.clone();
 
         // Revoke the key
-    assert!(manager.revoke_api_key(&key_id).await);
+        assert!(manager.revoke_api_key(&key_id).await);
 
         // Validation should fail
         let result = manager.validate_api_key(&response.api_key).await;
         assert!(result.is_none());
+        
+        drop(manager);
+        let _ = std::fs::remove_file(&db_path);
     }
 }

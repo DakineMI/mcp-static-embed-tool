@@ -47,6 +47,7 @@ pub struct ServerConfig {
     pub api_key_db_path: String,
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
+    pub enable_mcp: bool,
 }
 
 // Global metrics
@@ -142,49 +143,8 @@ async fn create_tls_acceptor(
 }
 /// Start the MCP server in stdio mode
 async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
-    // Initialize structured logging and metrics
-    init_logging_and_metrics(true);
-    // Output debugging information
-    info!("Starting MCP server in stdio mode");
-    // Generate a connection ID for this connection
-    let connection_id = generate_connection_id();
-    // Create a new EmbeddingService instance
-    let service = EmbeddingService::new(connection_id);
-    
-    // Initialize the connection using startup configuration
-    if let Err(e) = service.initialize_connection().await {
-        error!(
-            connection_id = %service.connection_id,
-            error = %e,
-            "Failed to initialize database connection"
-        );
-    }
-    // Spawn the double ctrl-c handler
-    let _signal = tokio::spawn(handle_double_ctrl_c());
-    // Create an MCP server instance for stdin/stdout
-    match rmcp::serve_server(service.clone(), (tokio::io::stdin(), tokio::io::stdout())).await {
-        Ok(server) => {
-            info!(
-                connection_id = %service.connection_id,
-                "MCP server instance creation succeeded"
-            );
-            // Wait for the server to complete its work
-            let _ = server.waiting().await;
-            info!(
-                connection_id = %service.connection_id,
-                "MCP server completed"
-            );
-        }
-        Err(e) => {
-            error!(
-                connection_id = %service.connection_id,
-                error = %e,
-                "MCP server instance creation failed"
-            );
-            return Err(anyhow::Error::from(e));
-        }
-    }
-    Ok(())
+    // MCP is currently disabled due to trait implementation issues
+    Err(anyhow!("MCP mode is currently disabled. Use HTTP mode instead."))
 }
 
 /// Start the MCP server in Unix socket mode
@@ -331,17 +291,21 @@ async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
     // Create shared app state with loaded models
     let app_state = Arc::new(AppState::new().await.map_err(|e| anyhow!("Failed to initialize models: {}", e))?);
     
-    // Create a new EmbeddingService instance for the MCP server
-    let mcp_service = StreamableHttpService::new(
-        move || {
-            Ok(EmbeddingService::new(generate_connection_id()))
-        },
-        session_manager,
-        StreamableHttpServerConfig {
-            stateful_mode: true,
-            sse_keep_alive: None,
-        },
-    );
+    // Create a new EmbeddingService instance for the MCP server (if enabled)
+    let mcp_service = if config.enable_mcp {
+        Some(StreamableHttpService::new(
+            move || {
+                Ok(EmbeddingService::new(generate_connection_id()))
+            },
+            session_manager,
+            StreamableHttpServerConfig {
+                stateful_mode: true,
+                sse_keep_alive: None,
+            },
+        ))
+    } else {
+        None
+    };
     
     // Create the OpenAI-compatible API router
     let api_router = create_api_router().with_state(Arc::clone(&app_state));
@@ -415,8 +379,13 @@ async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
             },
         );
     // Create an Axum router with both API and MCP services
-    let mut router = Router::new()
-        .nest_service("/v1/mcp", mcp_service)  // MCP over HTTP
+    let mut router = Router::new();
+    
+    if let Some(mcp_svc) = mcp_service {
+        router = router.nest_service("/v1/mcp", mcp_svc);  // MCP over HTTP
+    }
+    
+    router = router
         .merge(registration_router)
         .merge(protected_api_router)
         .merge(api_key_admin_router)
@@ -474,7 +443,7 @@ pub mod test_utils {
     use crate::server::state::AppState;
     use crate::server::limit::{ApiKeyRateLimiter, api_key_rate_limit_middleware};
     use axum::routing::get;
-    use std::net::TcpListener;
+    use tokio::net::TcpListener;
     use std::sync::Arc;
     use tokio::task::JoinHandle;
     use tower_http::trace::TraceLayer;
@@ -573,9 +542,11 @@ pub mod test_utils {
             .route("/health", get(crate::server::http::health))
             .layer(trace_layer);
 
-        let server = axum::serve(listener, router.into_make_service());
+        let server = axum::serve(listener, router);
 
-        let handle = tokio::spawn(server.serve());
+        let handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
 
         (addr_str, handle)
     }

@@ -42,8 +42,9 @@ pub fn format_duration(duration: std::time::Duration) -> String {
 ///
 /// # Example
 /// ```
-/// use static_embed_tool::utils;
-/// utils::distill("my_model", 128, "./output");
+/// use static_embedding_server::utils;
+/// use std::path::PathBuf;
+/// utils::distill("my_model", 128, Some(PathBuf::from("./output")));
 /// ```
 /// # Panics
 pub async fn distill(

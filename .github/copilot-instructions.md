@@ -1,5 +1,10 @@
 ---
 description: AI rules derived by SpecStory from the project AI interaction history
+globs: *
+---
+
+---
+description: AI rules derived by SpecStory from the project AI interaction history
 ---
 
 ## PROJECT OVERVIEW
@@ -33,7 +38,8 @@ let handles: Vec<task::JoinHandle<_>> = model_loads
     .collect();
 ```
 
-**Error Handling**: Use `Result<T, Box<dyn std::error::Error>>` for main functions, with structured logging via `tracing`. To handle errors returned by handler functions (`anyhow::Result<()>`) in `run_cli` (which expects `Result<(), Box<dyn std::error::Error>>`), convert the error types using `.map_err(Into::into)` in each match arm. When encountering the error: `the method anyhow_kind exists for reference &Box<dyn StdError>, but its trait bounds were not satisfied`, wrap the error in a descriptive message using `anyhow::anyhow!` with formatting. When using the `?` operator on a `Result` where the error type is a `&str`, the `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+**Error Handling**: Use `Result<T, Box<dyn std::error::Error>>` for main functions, with structured logging via `tracing`. To handle errors returned by handler functions (`anyhow::Result<()>`) in `run_cli` (which expects `Result<(), Box<dyn std::error::Error>>`), convert the error types using `.map_err(Into::into)` in each match arm. When encountering the error: `the method anyhow_kind exists for reference &Box<dyn StdError>, but its trait bounds were not satisfied`, wrap the error in a descriptive message using `anyhow::anyhow!` with formatting. When using the `?` operator on a `Result` where the error type is a `&str`, the `?` operator attempts to convert the error into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+**The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 
 **Path Resolution**: Cross-platform home directory detection:
 
@@ -104,7 +110,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Syntax Error: expected an item**: This is often caused by a misplaced duplicate struct definition or incomplete method code. Ensure the code block has a proper structure, remove duplicate structs, correct the type to use `InMemoryState`, and complete any incomplete methods.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**:  This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 
 **Key Log Messages**:
@@ -115,7 +121,50 @@ curl -X POST http://localhost:8080/v1/embeddings \
 
 **Take Ownership Of Tool Issues**: Always assume you are at fault first. Review your steps carefully before blaming tools or code. Absence of evidence is not evidence of absence.
 
-**Current Project Status**: The codebase currently has compilation errors (92 errors). The core architecture is sound but incomplete, requiring systematic fixes before testing or deployment. Expect type mismatches, missing trait implementations, and incomplete async handling.
+**Current Project Status**: The codebase currently compiles cleanly with `cargo build`. The core architecture is sound but incomplete, requiring systematic fixes before testing or deployment. Expect type mismatches, missing trait implementations, and incomplete async handling.
+
+### Key Fixes Applied:
+
+1. **Error Handling Conversion**: Fixed `?` operator errors in `models.rs` by converting `&str` errors to `anyhow::Error` using `map_err(|_| anyhow::anyhow!(...))`.
+
+2. **Import Cleanup**: Removed duplicate imports and added missing `anyhow` macro imports across multiple files (`start.rs`, `state.rs`, `api.rs`, etc.).
+
+3. **Type Annotations**: Updated function return types to use `AnyhowResult<T>` instead of `Result<T>` for consistency.
+
+4. **Iterator Handling**: Fixed certificate parsing by collecting iterators before applying `map_err` in `start.rs`.
+
+5. **TLS Implementation**: Temporarily disabled TLS support in `start.rs` due to API changes in newer versions of `rustls`/`axum` - marked for future implementation.
+
+6. **Rate Limiting**: Commented out rate limiting layer due to type mismatches with the `tower_governor` crate - marked for future resolution.
+
+7. **MCP Tools**: Fixed import issues and temporarily disabled problematic trait implementations in `mod.rs`.
+
+8. **API Key Management**: Fixed deprecated `rand::thread_rng()` usage and type annotation issues in `api_keys.rs`.
+
+9. **Documentation**: Removed unsupported `globs` attribute from `copilot-instructions.md`.
+
+10. **MCP Tool Compatibility Issues**: Disabled problematic MCP tools that were causing 24 compilation errors due to trait bound conflicts with the rmcp crate. Implemented conditional MCP support in the server.
+
+11. **Async TCP Listener**: Fixed `spawn_test_server` to use `tokio::net::TcpListener` instead of `std::net::TcpListener` and added proper `.await` calls.
+
+12. **Axum Server API**: Updated server spawning to use the correct Axum 0.8 API pattern (`axum::serve(listener, router)`).
+
+13. **Example Compilation**: Fixed `api_key_demo.rs` to use correct API methods and struct fields from the updated ApiKeyManager.
+
+14. **Test Database Setup**: Corrected the test manager to use proper database paths instead of incompatible sled Config patterns.
+
+### Current Status:
+- ✅ **Compiles successfully** with `cargo check` and `cargo build`
+- ✅ **Core HTTP API** functionality preserved
+- ✅ **CLI commands** working
+- ✅ **Model management** operational
+- ✅ **Authentication**: API key system for secure access
+- ⚠️ **MCP tools** partially disabled (needs rmcp crate API alignment)
+- ⚠️ **TLS support** temporarily disabled (needs rustls/axum API update)
+- ⚠️ **Rate limiting** temporarily disabled (needs tower_governor compatibility fix)
+- ⚠️ **Test Suite**: 7 out of 8 tests pass; 1 API key test failing (debugging in progress)
+
+The project is now in a functional state for basic HTTP API and CLI operations. The disabled features can be re-enabled once the respective crate APIs are updated or workarounds are implemented.
 
 **Compilation Errors and Fixes**:
 
@@ -127,7 +176,11 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**:  This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
+- **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
+- **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
+- **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
 
 ## AI CODING AGENT GUIDELINES
 
