@@ -19,12 +19,17 @@ struct ServerConfig {
     enable_mcp: bool,
     rate_limit_rps: u32,
     rate_limit_burst: u32,
+    enable_tls: bool,
+    tls_cert_path: Option<String>,
+    tls_key_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct AuthConfig {
     require_api_key: bool,
     registration_enabled: bool,
+    api_key_header: String,
+    api_key_prefix: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -39,6 +44,8 @@ struct LoggingConfig {
     level: String,
     file: Option<String>,
     json_format: bool,
+    max_file_size: Option<u64>,
+    max_files: Option<u32>,
 }
 
 impl Default for ServerConfig {
@@ -50,6 +57,9 @@ impl Default for ServerConfig {
             enable_mcp: false,
             rate_limit_rps: 100,
             rate_limit_burst: 200,
+            enable_tls: false,
+            tls_cert_path: None,
+            tls_key_path: None,
         }
     }
 }
@@ -59,6 +69,8 @@ impl Default for AuthConfig {
         Self {
             require_api_key: true,
             registration_enabled: true,
+            api_key_header: "X-API-Key".to_string(),
+            api_key_prefix: "Bearer ".to_string(),
         }
     }
 }
@@ -79,6 +91,8 @@ impl Default for LoggingConfig {
             level: "info".to_string(),
             file: None,
             json_format: false,
+            max_file_size: None,
+            max_files: None,
         }
     }
 }
@@ -155,10 +169,19 @@ async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::er
     println!("enable_mcp = {}", config.server.enable_mcp);
     println!("rate_limit_rps = {}", config.server.rate_limit_rps);
     println!("rate_limit_burst = {}", config.server.rate_limit_burst);
+    println!("enable_tls = {}", config.server.enable_tls);
+    if let Some(cert_path) = &config.server.tls_cert_path {
+        println!("tls_cert_path = \"{}\"", cert_path);
+    }
+    if let Some(key_path) = &config.server.tls_key_path {
+        println!("tls_key_path = \"{}\"", key_path);
+    }
     
     println!("\n[auth]");
     println!("require_api_key = {}", config.auth.require_api_key);
     println!("registration_enabled = {}", config.auth.registration_enabled);
+    println!("api_key_header = \"{}\"", config.auth.api_key_header);
+    println!("api_key_prefix = \"{}\"", config.auth.api_key_prefix);
     
     println!("\n[models]");
     if let Some(models_dir) = &config.models.models_dir {
@@ -173,6 +196,12 @@ async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::er
         println!("file = \"{}\"", file);
     }
     println!("json_format = {}", config.logging.json_format);
+    if let Some(max_file_size) = config.logging.max_file_size {
+        println!("max_file_size = {}", max_file_size);
+    }
+    if let Some(max_files) = config.logging.max_files {
+        println!("max_files = {}", max_files);
+    }
     
     Ok(())
 }
@@ -206,6 +235,9 @@ async fn set_config(
         ["server", "rate_limit_burst"] => {
             config.server.rate_limit_burst = value.parse()?;
         }
+        ["server", "enable_tls"] => {
+            config.server.enable_tls = value.parse()?;
+        }
         ["auth", "require_api_key"] => {
             config.auth.require_api_key = value.parse()?;
         }
@@ -234,6 +266,12 @@ async fn set_config(
         }
         ["logging", "json_format"] => {
             config.logging.json_format = value.parse()?;
+        }
+        ["auth", "api_key_header"] => {
+            config.auth.api_key_header = value;
+        }
+        ["auth", "api_key_prefix"] => {
+            config.auth.api_key_prefix = value;
         }
         _ => {
             eprintln!("Unknown configuration key: {}", args.key);
@@ -340,7 +378,10 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        let _lock = TEST_MUTEX.lock().unwrap();
+        let _lock = TEST_MUTEX.lock().unwrap_or_else(|poisoned| {
+            // If the mutex is poisoned, we can still use it
+            poisoned.into_inner()
+        });
         // Save original HOME
         let original_home = env::var("HOME").ok();
         let original_userprofile = env::var("USERPROFILE").ok();
@@ -510,17 +551,386 @@ mod tests {
     }
 
     #[test]
-    fn test_set_config_invalid_key() {
+    fn test_set_config_auth_require_api_key() {
         with_test_env(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 let args = SetConfigArgs {
-                    key: "invalid.key".to_string(),
-                    value: "value".to_string(),
+                    key: "auth.require_api_key".to_string(),
+                    value: "false".to_string(),
                 };
-                // Should not panic, just print error
                 let result = set_config(args, None).await;
                 assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.auth.require_api_key, false);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_auth_api_key_header() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "auth.api_key_header".to_string(),
+                    value: "X-Custom-Key".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.auth.api_key_header, "X-Custom-Key");
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_auth_api_key_prefix() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "auth.api_key_prefix".to_string(),
+                    value: "custom-".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.auth.api_key_prefix, "custom-");
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_server_enable_tls() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.enable_tls".to_string(),
+                    value: "true".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.enable_tls, true);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_unknown_key() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "unknown.key".to_string(),
+                    value: "value".to_string(),
+                };
+                let result = set_config(args, None).await;
+                // set_config returns Ok(()) for unknown keys (just prints error)
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_load_config_with_path() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                // Create a custom config file
+                let custom_config_path = std::env::temp_dir().join("test_custom_config.toml");
+                let custom_config = r#"
+[server]
+default_port = 9999
+default_bind = "127.0.0.1"
+default_model = "potion-32M"
+enable_mcp = false
+rate_limit_rps = 100
+rate_limit_burst = 200
+enable_tls = false
+
+[auth]
+require_api_key = true
+registration_enabled = true
+api_key_header = "X-API-Key"
+api_key_prefix = "Bearer "
+
+[models]
+auto_download = true
+default_distill_dims = 128
+
+[logging]
+level = "info"
+json_format = false
+"#;
+                std::fs::write(&custom_config_path, custom_config).unwrap();
+
+                let config = load_config(Some(custom_config_path.clone())).unwrap();
+                assert_eq!(config.server.default_port, 9999);
+                assert_eq!(config.server.default_bind, "127.0.0.1");
+                assert_eq!(config.server.default_model, "potion-32M");
+
+                // Cleanup
+                std::fs::remove_file(custom_config_path).unwrap();
+            });
+        });
+    }
+
+    #[test]
+    fn test_save_config() {
+        with_test_env(|| {
+            let mut config = load_config(None).unwrap();
+            config.server.default_port = 7777;
+
+            let temp_path = std::env::temp_dir().join("test_save_config.toml");
+            let result = save_config(&config, Some(temp_path.clone()));
+            assert!(result.is_ok());
+
+            // Verify the file was written
+            let content = std::fs::read_to_string(&temp_path).unwrap();
+            assert!(content.contains("default_port = 7777"));
+
+            // Cleanup
+            std::fs::remove_file(temp_path).unwrap();
+        });
+    }
+
+    #[test]
+    fn test_get_config_path() {
+        with_test_env(|| {
+            let path = get_config_path(None);
+            assert!(path.is_ok());
+            // Should be in the temp directory for tests
+            let path_str = path.unwrap().to_str().unwrap().to_string();
+            assert!(path_str.contains("test_") && path_str.contains(".embed-tool"));
+        });
+    }
+
+    #[test]
+    fn test_get_config_path_with_custom() {
+        let custom_path = PathBuf::from("/custom/path/config.toml");
+        let path = get_config_path(Some(custom_path.clone()));
+        assert_eq!(path.unwrap(), custom_path);
+    }
+
+    #[test]
+    fn test_set_config_server_default_port() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.default_port".to_string(),
+                    value: "9090".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.default_port, 9090);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_server_default_bind() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.default_bind".to_string(),
+                    value: "127.0.0.1".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.default_bind, "127.0.0.1");
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_server_default_model() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.default_model".to_string(),
+                    value: "custom-model".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.default_model, "custom-model");
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_server_enable_mcp() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.enable_mcp".to_string(),
+                    value: "true".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.enable_mcp, true);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_server_rate_limit_rps() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.rate_limit_rps".to_string(),
+                    value: "50".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.rate_limit_rps, 50);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_server_rate_limit_burst() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.rate_limit_burst".to_string(),
+                    value: "150".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.server.rate_limit_burst, 150);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_auth_registration_enabled() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "auth.registration_enabled".to_string(),
+                    value: "false".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.auth.registration_enabled, false);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_models_models_dir() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "models.models_dir".to_string(),
+                    value: "/custom/models".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.models.models_dir, Some("/custom/models".to_string()));
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_models_auto_download() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "models.auto_download".to_string(),
+                    value: "false".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.models.auto_download, false);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_models_default_distill_dims() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "models.default_distill_dims".to_string(),
+                    value: "256".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.models.default_distill_dims, 256);
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_logging_file() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "logging.file".to_string(),
+                    value: "/var/log/embed-tool.log".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.logging.file, Some("/var/log/embed-tool.log".to_string()));
+            });
+        });
+    }
+
+    #[test]
+    fn test_set_config_logging_json_format() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "logging.json_format".to_string(),
+                    value: "true".to_string(),
+                };
+                let result = set_config(args, None).await;
+                assert!(result.is_ok());
+
+                let config = load_config(None).unwrap();
+                assert_eq!(config.logging.json_format, true);
             });
         });
     }
@@ -536,6 +946,55 @@ mod tests {
                 };
                 // Should not panic, just print error
                 let result = set_config(args, None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_config_command_get() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let result = handle_config_command(ConfigAction::Get, None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_config_command_set() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = SetConfigArgs {
+                    key: "server.default_port".to_string(),
+                    value: "8888".to_string(),
+                };
+                let result = handle_config_command(ConfigAction::Set(args), None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_config_command_path() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let result = handle_config_command(ConfigAction::Path, None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_reset_config_no_file() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                // Should not panic when config file doesn't exist
+                let result = reset_config(None).await;
                 assert!(result.is_ok());
             });
         });
@@ -600,6 +1059,110 @@ mod tests {
             // Should not panic, just print error
             let result = handle_batch_command(args, None).await;
             assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_config_defaults() {
+        let config = Config::default();
+        assert_eq!(config.server.default_port, 8080);
+        assert_eq!(config.server.default_bind, "0.0.0.0");
+        assert_eq!(config.server.default_model, "potion-32M");
+        assert_eq!(config.server.enable_mcp, false);
+        assert_eq!(config.server.rate_limit_rps, 100);
+        assert_eq!(config.server.rate_limit_burst, 200);
+        assert_eq!(config.server.enable_tls, false);
+        assert_eq!(config.server.tls_cert_path, None);
+        assert_eq!(config.server.tls_key_path, None);
+
+        assert_eq!(config.auth.require_api_key, true);
+        assert_eq!(config.auth.registration_enabled, true);
+        assert_eq!(config.auth.api_key_header, "X-API-Key");
+        assert_eq!(config.auth.api_key_prefix, "Bearer ");
+
+        assert_eq!(config.models.models_dir, None);
+        assert_eq!(config.models.auto_download, true);
+        assert_eq!(config.models.default_distill_dims, 128);
+
+        assert_eq!(config.logging.level, "info");
+        assert_eq!(config.logging.file, None);
+        assert_eq!(config.logging.json_format, false);
+        assert_eq!(config.logging.max_file_size, None);
+        assert_eq!(config.logging.max_files, None);
+    }
+
+    #[test]
+    fn test_server_config_default() {
+        let config = ServerConfig::default();
+        assert_eq!(config.default_port, 8080);
+        assert_eq!(config.default_bind, "0.0.0.0");
+        assert_eq!(config.default_model, "potion-32M");
+        assert!(!config.enable_mcp);
+        assert_eq!(config.rate_limit_rps, 100);
+        assert_eq!(config.rate_limit_burst, 200);
+        assert!(!config.enable_tls);
+        assert_eq!(config.tls_cert_path, None);
+        assert_eq!(config.tls_key_path, None);
+    }
+
+    #[test]
+    fn test_auth_config_default() {
+        let config = AuthConfig::default();
+        assert!(config.require_api_key);
+        assert!(config.registration_enabled);
+        assert_eq!(config.api_key_header, "X-API-Key");
+        assert_eq!(config.api_key_prefix, "Bearer ");
+    }
+
+    #[test]
+    fn test_model_config_default() {
+        let config = ModelConfig::default();
+        assert_eq!(config.models_dir, None);
+        assert!(config.auto_download);
+        assert_eq!(config.default_distill_dims, 128);
+    }
+
+    #[test]
+    fn test_logging_config_default() {
+        let config = LoggingConfig::default();
+        assert_eq!(config.level, "info");
+        assert_eq!(config.file, None);
+        assert!(!config.json_format);
+        assert_eq!(config.max_file_size, None);
+        assert_eq!(config.max_files, None);
+    }
+
+    #[test]
+    fn test_load_config_nonexistent_file() {
+        with_test_env(|| {
+            let nonexistent_path = PathBuf::from("/nonexistent/path/config.toml");
+            let config = load_config(Some(nonexistent_path)).unwrap();
+            // Should return default config
+            assert_eq!(config.server.default_port, 8080);
+        });
+    }
+
+    #[test]
+    fn test_save_config_creates_directory() {
+        with_test_env(|| {
+            let temp_dir = std::env::temp_dir().join("embed_tool_test_new_dir");
+            let config_path = temp_dir.join("config.toml");
+            
+            // Ensure directory doesn't exist
+            if temp_dir.exists() {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+            }
+            
+            let config = Config::default();
+            let result = save_config(&config, Some(config_path.clone()));
+            assert!(result.is_ok());
+            
+            // Directory should have been created
+            assert!(temp_dir.exists());
+            assert!(config_path.exists());
+            
+            // Cleanup
+            let _ = std::fs::remove_dir_all(&temp_dir);
         });
     }
 }

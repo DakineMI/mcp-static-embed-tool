@@ -39,7 +39,7 @@ let handles: Vec<task::JoinHandle<_>> = model_loads
 ```
 
 **Error Handling**: Use `Result<T, Box<dyn std::error::Error>>` for main functions, with structured logging via `tracing`. To handle errors returned by handler functions (`anyhow::Result<()>`) in `run_cli` (which expects `Result<(), Box<dyn std::error::Error>>`), convert the error types using `.map_err(Into::into)` in each match arm. When encountering the error: `the method anyhow_kind exists for reference &Box<dyn StdError>, but its trait bounds were not satisfied`, wrap the error in a descriptive message using `anyhow::anyhow!` with formatting. When using the `?` operator on a `Result` where the error type is a `&str`, the `?` operator attempts to convert the error into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
-**The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
+**The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.** When using the `?` operator on a `Result` where the error type is a `&str`, the `?` operator attempts to convert the error into an `anyhow::Error` using `map_err(|_| anyhow::anyhow!(...))`.
 
 **Path Resolution**: Cross-platform home directory detection:
 
@@ -96,6 +96,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Single Instance**: PID file management ensures only one server runs
 - **Model Loading**: Graceful fallback - continue if custom models fail, default to `potion-32M`
 - **MCP Integration**: Resource providers in `src/resources/`, tools in `src/tools/`
+- **Test Artifacts**: When running the application or tests, do not generate garbage test artifacts without cleaning them up.
 
 ## DEBUGGING PATTERNS
 
@@ -110,9 +111,9 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Syntax Error: expected an item**: This is often caused by a misplaced duplicate struct definition or incomplete method code. Ensure the code block has a proper structure, remove duplicate structs, correct the type to use `InMemoryState`, and complete any incomplete methods.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
-- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
+- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
 - **Unresolved import `governor::state::keyed::NotKeyed`**: Update the import to `governor::state::NotKeyed`.
 - **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
 - **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
@@ -172,20 +173,21 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - ⚠️ **TLS support** temporarily disabled (needs rustls/axum API update)
 - ⚠️ **Rate limiting** temporarily disabled (needs tower_governor compatibility fix)
 - ✅ **Test Suite**: All tests now passing
+- ✅ **Code Coverage**: 35.36% (395/1117 lines covered)
 
 The project is now in a functional state for basic HTTP API and CLI operations. The disabled features can be re-enabled once the respective crate APIs are updated or workarounds are implemented.
 
 **Compilation Errors and Fixes**:
 
 - **`HashMap`, `RwLock`, `json`, `ApiKey` defined multiple times**: Remove duplicate import statements, ensuring each is defined only once in the module's namespace.
-- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
+- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
 - **Unresolved import `governor::state::keyed::NotKeyed`**: Update the import to `governor::state::NotKeyed`.
 - **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
 - **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
 - **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 - **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
@@ -225,6 +227,7 @@ When documenting these aspects:
 - Document only discoverable patterns, not aspirational practices.
 - Reference key files/directories that exemplify important patterns.
 - Use detailed todos to track all work. They should be specific and broken down in reasonable, completable, simple tasks.
+- When running the application or tests, do not generate garbage test artifacts without cleaning them up.
 
 **Updates needed for `copilot-instructions.md`:**
 
@@ -234,3 +237,5 @@ When documenting these aspects:
 4. Clarify project status as a work-in-progress.
 5. Update workflow examples to reflect current CLI command availability.
 6. **Do not create `agent.md`**. The existing `copilot-instructions.md` serves the same purpose.
+
+The AI coding assistant must add a large number of tests, so go through and quickly and efficiently add tests for every method, and once you can not find another test to add, then you can check the percentage. The AI coding assistant does not need to run tarpaulin after every test it adds. You **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.

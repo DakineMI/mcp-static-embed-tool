@@ -65,11 +65,13 @@ pub struct ModelInfo {
 }
 
 #[derive(Serialize)]
+#[derive(Debug)]
 pub struct ApiError {
     pub error: ErrorDetails,
 }
 
 #[derive(Serialize)]
+#[derive(Debug)]
 pub struct ErrorDetails {
     pub message: String,
     pub r#type: String,
@@ -267,11 +269,11 @@ pub fn create_api_router() -> Router<Arc<AppState>> {
         // Core embedding functionality
         .route("/v1/embeddings", post(embeddings_handler))
         .route("/v1/models", get(models_handler))
-        
+
         // Standard OpenAI endpoints (unsupported but properly handled)
         .route("/v1/chat/completions", post(unsupported_handler))
         .route("/v1/completions", post(unsupported_handler))
-        
+
         // Other common OpenAI endpoints (also unsupported)
         .route("/v1/images/generations", post(unsupported_handler))
         .route("/v1/audio/transcriptions", post(unsupported_handler))
@@ -280,4 +282,340 @@ pub fn create_api_router() -> Router<Arc<AppState>> {
         .route("/v1/fine-tuning/jobs", get(unsupported_handler))
         .route("/v1/files", post(unsupported_handler))
         .route("/v1/files", get(unsupported_handler))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::Json;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use crate::server::state::Model;
+
+    // Mock StaticModel for testing
+    #[derive(Clone)]
+    struct MockModel {
+        name: String,
+    }
+
+    impl Model for MockModel {
+        fn encode(&self, inputs: &[String]) -> Vec<Vec<f32>> {
+            inputs.iter().map(|_| vec![0.1, 0.2, 0.3]).collect()
+        }
+    }
+
+    fn create_test_app_state() -> Arc<AppState> {
+        let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
+        models.insert("potion-32M".to_string(), Arc::new(MockModel { name: "potion-32M".to_string() }));
+        models.insert("test-model".to_string(), Arc::new(MockModel { name: "test-model".to_string() }));
+
+        Arc::new(AppState {
+            models,
+            default_model: "potion-32M".to_string(),
+            startup_time: std::time::SystemTime::now(),
+        })
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_empty_input() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: vec![],
+            model: None,
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_err());
+        let (status, Json(error)) = result.err().unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.error.message, "Input too long or empty");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_too_many_inputs() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: (0..101).map(|i| format!("text {}", i)).collect(),
+            model: None,
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_err());
+        let (status, Json(error)) = result.err().unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.error.message, "Batch size too large. Maximum 100 inputs allowed.");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_empty_text() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: vec!["".to_string()],
+            model: None,
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_err());
+        let (status, Json(error)) = result.err().unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.error.message, "Input too long or empty");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_text_too_long() {
+        let state = create_test_app_state();
+        let long_text = "a".repeat(8193);
+        let request = EmbeddingRequest {
+            input: vec![long_text],
+            model: None,
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_err());
+        let (status, Json(error)) = result.err().unwrap();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.error.message, "Input too long or empty");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_model_not_found() {
+        let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
+        models.insert("existing-model".to_string(), Arc::new(MockModel { name: "existing-model".to_string() }));
+
+        let state = Arc::new(AppState {
+            models,
+            default_model: "nonexistent".to_string(),
+            startup_time: std::time::SystemTime::now(),
+        });
+
+        let request = EmbeddingRequest {
+            input: vec!["test text".to_string()],
+            model: Some("nonexistent-model".to_string()),
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_err());
+        let (status, Json(error)) = result.err().unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.error.message, "No models available");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_success_single_input() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: vec!["test text".to_string()],
+            model: None,
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_ok());
+        let Json(response) = result.unwrap();
+        assert_eq!(response.object, "list");
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].embedding, vec![0.1, 0.2, 0.3]);
+        assert_eq!(response.data[0].index, 0);
+        assert_eq!(response.model, "potion-32M");
+        assert_eq!(response.usage.prompt_tokens, 0);
+        assert_eq!(response.usage.total_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_success_multiple_inputs() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: vec!["text 1".to_string(), "text 2".to_string()],
+            model: Some("test-model".to_string()),
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_ok());
+        let Json(response) = result.unwrap();
+        assert_eq!(response.data.len(), 2);
+        assert_eq!(response.model, "test-model");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_model_from_query_params() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: vec!["test text".to_string()],
+            model: None,
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: Some("test-model".to_string()) }),
+            Json(request),
+        ).await;
+
+        assert!(result.is_ok());
+        let Json(response) = result.unwrap();
+        assert_eq!(response.model, "test-model");
+    }
+
+    #[tokio::test]
+    async fn test_models_handler() {
+        let state = create_test_app_state();
+
+        let result = models_handler(axum::extract::State(state)).await;
+
+        let Json(response) = result;
+        assert_eq!(response.object, "list");
+        assert_eq!(response.data.len(), 2);
+
+        // Check potion model
+        let potion_model = response.data.iter().find(|m| m.id == "potion-32M").unwrap();
+        assert_eq!(potion_model.object, "model");
+        assert_eq!(potion_model.owned_by, "minishlab");
+
+        // Check custom model
+        let custom_model = response.data.iter().find(|m| m.id == "test-model").unwrap();
+        assert_eq!(custom_model.object, "model");
+        assert_eq!(custom_model.owned_by, "custom");
+    }
+
+    #[tokio::test]
+    async fn test_unsupported_handler() {
+        let result = unsupported_handler().await;
+
+        let (status, Json(error)) = result;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error.error.r#type, "invalid_request_error");
+        assert!(error.error.message.contains("only supports embedding operations"));
+        assert_eq!(error.error.code, Some("unsupported_endpoint".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_create_api_router() {
+        let router = create_api_router();
+
+        // The router should have the expected routes
+        // We can't easily test the exact routes without more complex setup,
+        // but we can verify the router is created successfully
+        assert!(true); // If we get here, router creation worked
+    }
+
+    #[test]
+    fn test_embedding_request_deserialization() {
+        let json = r#"{
+            "input": ["text1", "text2"],
+            "model": "test-model",
+            "encoding_format": "float",
+            "dimensions": 128,
+            "user": "test-user"
+        }"#;
+
+        let request: EmbeddingRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.input, vec!["text1", "text2"]);
+        assert_eq!(request.model, Some("test-model".to_string()));
+        assert_eq!(request.encoding_format, Some("float".to_string()));
+        assert_eq!(request.dimensions, Some(128));
+        assert_eq!(request.user, Some("test-user".to_string()));
+    }
+
+    #[test]
+    fn test_embedding_response_serialization() {
+        let response = EmbeddingResponse {
+            object: "list".to_string(),
+            data: vec![EmbeddingData {
+                object: "embedding".to_string(),
+                embedding: vec![0.1, 0.2, 0.3],
+                index: 0,
+            }],
+            model: "test-model".to_string(),
+            usage: Usage {
+                prompt_tokens: 10,
+                total_tokens: 10,
+            },
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["object"], "list");
+        assert_eq!(parsed["model"], "test-model");
+        assert_eq!(parsed["data"][0]["embedding"], serde_json::json!([0.1, 0.2, 0.3]));
+        assert_eq!(parsed["usage"]["prompt_tokens"], 10);
+    }
+
+    #[test]
+    fn test_api_error_serialization() {
+        let error = ApiError {
+            error: ErrorDetails {
+                message: "Test error".to_string(),
+                r#type: "test_error".to_string(),
+                param: Some("test_param".to_string()),
+                code: Some("test_code".to_string()),
+            },
+        };
+
+        let json = serde_json::to_string(&error).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["error"]["message"], "Test error");
+        assert_eq!(parsed["error"]["type"], "test_error");
+        assert_eq!(parsed["error"]["param"], "test_param");
+        assert_eq!(parsed["error"]["code"], "test_code");
+    }
 }

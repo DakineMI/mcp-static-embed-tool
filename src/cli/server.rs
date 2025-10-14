@@ -266,14 +266,18 @@ async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
     let output = Command::new("lsof")
         .args(&["-t", &format!("-i:{}", port)])
         .output()?;
-    
+
+    println!("lsof output status: {}", output.status);
+    println!("lsof stdout: {:?}", String::from_utf8_lossy(&output.stdout));
+    println!("lsof stderr: {:?}", String::from_utf8_lossy(&output.stderr));
+
     if output.status.success() && !output.stdout.is_empty() {
         let pid_str = String::from_utf8(output.stdout)?;
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             return Ok(Some(pid));
         }
     }
-    
+
     Ok(None)
 }
 
@@ -420,6 +424,8 @@ mod tests {
         // Test finding server on a port that's unlikely to have anything
         let result = find_server_by_port(65530).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().is_none());
+        let server_pid = result.unwrap();
+        println!("Server PID found: {:?}", server_pid);
+        assert!(server_pid.is_none());
     }
 }

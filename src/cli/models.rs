@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::fs;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use chrono;
 
 #[derive(Serialize, Deserialize)]
 struct ModelRegistry {
@@ -543,9 +544,9 @@ mod tests {
                     force: false,
                 };
 
-                // This will fail because download is not implemented, but should not panic
+                // This will succeed even though it's a simulated download
                 let result = download_model(args).await;
-                assert!(result.is_ok()); // The function returns Ok even though download is simulated
+                assert!(result.is_ok()); // The function returns Ok even though it's simulated
             });
         });
     }
