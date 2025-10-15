@@ -430,6 +430,7 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use clap::Parser;
 
     #[test]
@@ -621,5 +622,398 @@ mod tests {
 
         assert_eq!(cli.config, Some(std::path::PathBuf::from("/path/to/config.toml")));
         assert!(cli.verbose);
+    }
+
+    #[tokio::test]
+    async fn test_run_cli_server_start() {
+        // Test run_cli with server start command (mocked to avoid actual server startup)
+        // We can't easily test the full run_cli function without mocking the command handlers,
+        // but we can test that it parses correctly and would call the right handlers
+        
+        // This test verifies the CLI parsing works end-to-end
+        let args = vec!["embed-tool", "server", "start", "--port", "8080", "--bind", "127.0.0.1"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        
+        match cli.command {
+            Commands::Server { action: ServerAction::Start(args) } => {
+                assert_eq!(args.port, 8080);
+                assert_eq!(args.bind, "127.0.0.1");
+            }
+            _ => panic!("Expected Server Start command"),
+        }
+    }
+
+    #[test]
+    fn test_server_action_augment_subcommands() {
+        let cmd = Command::new("test");
+        let augmented = ServerAction::augment_subcommands(cmd);
+        
+        // Test that subcommands are properly added
+        let subcommands: Vec<&str> = augmented.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(subcommands.contains(&"start"));
+        assert!(subcommands.contains(&"stop"));
+        assert!(subcommands.contains(&"status"));
+        assert!(subcommands.contains(&"restart"));
+    }
+
+    #[test]
+    fn test_server_action_from_arg_matches() {
+        use clap::ArgMatches;
+        
+        // Test invalid subcommand
+        let matches = Command::new("test").get_matches_from(vec!["test"]);
+        let result = ServerAction::from_arg_matches(&matches);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_start_args_augment_args() {
+        let cmd = Command::new("start");
+        let augmented = StartArgs::augment_args(cmd);
+        
+        // Test that required arguments are added
+        let args: Vec<&str> = augmented.get_arguments().map(|a| a.get_id().as_str()).collect();
+        assert!(args.contains(&"port"));
+        assert!(args.contains(&"bind"));
+        assert!(args.contains(&"models"));
+        assert!(args.contains(&"default_model"));
+        assert!(args.contains(&"mcp"));
+        assert!(args.contains(&"auth_disabled"));
+        assert!(args.contains(&"daemon"));
+    }
+
+    #[test]
+    fn test_start_args_from_arg_matches() {
+        let cmd = StartArgs::augment_args(Command::new("start"));
+        let matches = cmd.get_matches_from(vec!["start", "--port", "8080", "--bind", "127.0.0.1"]);
+        
+        let result = StartArgs::from_arg_matches(&matches);
+        assert!(result.is_ok());
+        let args = result.unwrap();
+        assert_eq!(args.port, 8080);
+        assert_eq!(args.bind, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_commands_enum_variants() {
+        // Test Server command variant
+        let server_action = ServerAction::Stop;
+        let server_command = Commands::Server { action: server_action };
+        match server_command {
+            Commands::Server { action: ServerAction::Stop } => {}
+            _ => panic!("Expected Server Stop command"),
+        }
+
+        // Test Model command variant
+        let model_action = ModelAction::List;
+        let model_command = Commands::Model { action: model_action };
+        match model_command {
+            Commands::Model { action: ModelAction::List } => {}
+            _ => panic!("Expected Model List command"),
+        }
+
+        // Test Config command variant
+        let config_action = ConfigAction::Get;
+        let config_command = Commands::Config { action: config_action };
+        match config_command {
+            Commands::Config { action: ConfigAction::Get } => {}
+            _ => panic!("Expected Config Get command"),
+        }
+    }
+
+    #[test]
+    fn test_embed_args_creation() {
+        let embed_args = EmbedArgs {
+            text: "Hello world".to_string(),
+            model: Some("custom-model".to_string()),
+            format: "json".to_string(),
+        };
+        
+        assert_eq!(embed_args.text, "Hello world");
+        assert_eq!(embed_args.model, Some("custom-model".to_string()));
+        assert_eq!(embed_args.format, "json");
+    }
+
+    #[test]
+    fn test_batch_args_creation() {
+        let batch_args = BatchArgs {
+            input: PathBuf::from("/input.json"),
+            output: Some(PathBuf::from("/output.json")),
+            model: Some("batch-model".to_string()),
+            format: "json".to_string(),
+            batch_size: 64,
+        };
+        
+        assert_eq!(batch_args.input, PathBuf::from("/input.json"));
+        assert_eq!(batch_args.output, Some(PathBuf::from("/output.json")));
+        assert_eq!(batch_args.model, Some("batch-model".to_string()));
+        assert_eq!(batch_args.format, "json");
+        assert_eq!(batch_args.batch_size, 64);
+    }
+
+    #[test]
+    fn test_download_args_creation() {
+        let download_args = DownloadArgs {
+            model_name: "test-model".to_string(),
+            alias: Some("my-model".to_string()),
+            force: true,
+        };
+        
+        assert_eq!(download_args.model_name, "test-model");
+        assert_eq!(download_args.alias, Some("my-model".to_string()));
+        assert!(download_args.force);
+    }
+
+    #[test]
+    fn test_distill_args_creation() {
+        let distill_args = DistillArgs {
+            input: "input-model".to_string(),
+            output: "output-model".to_string(),
+            dims: 256,
+            force: false,
+        };
+        
+        assert_eq!(distill_args.input, "input-model");
+        assert_eq!(distill_args.output, "output-model");
+        assert_eq!(distill_args.dims, 256);
+        assert!(!distill_args.force);
+    }
+
+    #[test]
+    fn test_remove_args_creation() {
+        let remove_args = RemoveArgs {
+            model_name: "model-to-remove".to_string(),
+            yes: true,
+        };
+        
+        assert_eq!(remove_args.model_name, "model-to-remove");
+        assert!(remove_args.yes);
+    }
+
+    #[test]
+    fn test_update_args_creation() {
+        let update_args = UpdateArgs {
+            model_name: "model-to-update".to_string(),
+        };
+        
+        assert_eq!(update_args.model_name, "model-to-update");
+    }
+
+    #[test]
+    fn test_info_args_creation() {
+        let info_args = InfoArgs {
+            model_name: "model-for-info".to_string(),
+        };
+        
+        assert_eq!(info_args.model_name, "model-for-info");
+    }
+
+    #[test]
+    fn test_set_config_args_creation() {
+        let set_config_args = SetConfigArgs {
+            key: "auth.require_api_key".to_string(),
+            value: "true".to_string(),
+        };
+        
+        assert_eq!(set_config_args.key, "auth.require_api_key");
+        assert_eq!(set_config_args.value, "true");
+    }
+
+    #[test]
+    fn test_model_action_variants() {
+        // Test all ModelAction variants
+        match ModelAction::List {
+            ModelAction::List => {}
+            _ => panic!("Expected List variant"),
+        }
+
+        let download_args = DownloadArgs {
+            model_name: "test".to_string(),
+            alias: None,
+            force: false,
+        };
+        match ModelAction::Download(download_args) {
+            ModelAction::Download(_) => {}
+            _ => panic!("Expected Download variant"),
+        }
+
+        let distill_args = DistillArgs {
+            input: "input".to_string(),
+            output: "output".to_string(),
+            dims: 128,
+            force: false,
+        };
+        match ModelAction::Distill(distill_args) {
+            ModelAction::Distill(_) => {}
+            _ => panic!("Expected Distill variant"),
+        }
+
+        let remove_args = RemoveArgs {
+            model_name: "test".to_string(),
+            yes: false,
+        };
+        match ModelAction::Remove(remove_args) {
+            ModelAction::Remove(_) => {}
+            _ => panic!("Expected Remove variant"),
+        }
+
+        let update_args = UpdateArgs {
+            model_name: "test".to_string(),
+        };
+        match ModelAction::Update(update_args) {
+            ModelAction::Update(_) => {}
+            _ => panic!("Expected Update variant"),
+        }
+
+        let info_args = InfoArgs {
+            model_name: "test".to_string(),
+        };
+        match ModelAction::Info(info_args) {
+            ModelAction::Info(_) => {}
+            _ => panic!("Expected Info variant"),
+        }
+    }
+
+    #[test]
+    fn test_config_action_variants() {
+        // Test all ConfigAction variants
+        match ConfigAction::Get {
+            ConfigAction::Get => {}
+            _ => panic!("Expected Get variant"),
+        }
+
+        let set_args = SetConfigArgs {
+            key: "test".to_string(),
+            value: "value".to_string(),
+        };
+        match ConfigAction::Set(set_args) {
+            ConfigAction::Set(_) => {}
+            _ => panic!("Expected Set variant"),
+        }
+
+        match ConfigAction::Reset {
+            ConfigAction::Reset => {}
+            _ => panic!("Expected Reset variant"),
+        }
+
+        match ConfigAction::Path {
+            ConfigAction::Path => {}
+            _ => panic!("Expected Path variant"),
+        }
+    }
+
+    #[test]
+    fn test_server_action_variants() {
+        let start_args = StartArgs {
+            port: 8080,
+            bind: "127.0.0.1".to_string(),
+            socket_path: None,
+            models: None,
+            default_model: "potion-32M".to_string(),
+            mcp: false,
+            auth_disabled: false,
+            daemon: false,
+            pid_file: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+        };
+
+        match ServerAction::Start(start_args.clone()) {
+            ServerAction::Start(_) => {}
+            _ => panic!("Expected Start variant"),
+        }
+
+        match ServerAction::Stop {
+            ServerAction::Stop => {}
+            _ => panic!("Expected Stop variant"),
+        }
+
+        match ServerAction::Status {
+            ServerAction::Status => {}
+            _ => panic!("Expected Status variant"),
+        }
+
+        match ServerAction::Restart(start_args) {
+            ServerAction::Restart(_) => {}
+            _ => panic!("Expected Restart variant"),
+        }
+    }
+
+    #[test]
+    fn test_cli_version() {
+        let cli = Cli::parse_from(vec!["embed-tool", "--version"]);
+        // If this test runs, it means the version parsing works
+        // The actual version display is handled by clap
+    }
+
+    #[test]
+    fn test_cli_help() {
+        // Test that help can be generated without panicking
+    let mut cmd = Cli::command();
+    let help = cmd.render_help();
+        assert!(help.to_string().contains("embed-tool"));
+        assert!(help.to_string().contains("Static embedding server"));
+    }
+
+    #[test]
+    fn test_start_args_defaults() {
+        let args = vec!["embed-tool", "server", "start", "--port", "8080", "--bind", "127.0.0.1"];
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        match cli.command {
+            Commands::Server { action: ServerAction::Start(args) } => {
+                assert_eq!(args.default_model, "potion-32M"); // Default value
+                assert!(!args.mcp); // Default false
+                assert!(!args.auth_disabled); // Default false
+                assert!(!args.daemon); // Default false
+                assert_eq!(args.socket_path, None); // Default None
+                assert_eq!(args.models, None); // Default None
+            }
+            _ => panic!("Expected Server Start command"),
+        }
+    }
+
+    #[test]
+    fn test_embed_args_defaults() {
+        let args = vec!["embed-tool", "embed", "Hello world"];
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        match cli.command {
+            Commands::Embed(args) => {
+                assert_eq!(args.format, "json"); // Default value
+                assert_eq!(args.model, None); // Default None
+            }
+            _ => panic!("Expected Embed command"),
+        }
+    }
+
+    #[test]
+    fn test_batch_args_defaults() {
+        let args = vec!["embed-tool", "batch", "/input.json"];
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        match cli.command {
+            Commands::Batch(args) => {
+                assert_eq!(args.format, "json"); // Default value
+                assert_eq!(args.batch_size, 32); // Default value
+                assert_eq!(args.model, None); // Default None
+                assert_eq!(args.output, None); // Default None
+            }
+            _ => panic!("Expected Batch command"),
+        }
+    }
+
+    #[test]
+    fn test_distill_args_defaults() {
+        let args = vec!["embed-tool", "model", "distill", "input", "output"];
+        let cli = Cli::try_parse_from(args).unwrap();
+
+        match cli.command {
+            Commands::Model { action: ModelAction::Distill(args) } => {
+                assert_eq!(args.dims, 128); // Default value
+                assert!(!args.force); // Default false
+            }
+            _ => panic!("Expected Model Distill command"),
+        }
     }
 }

@@ -559,11 +559,119 @@ mod tests {
                 let args = UpdateArgs {
                     model_name: "test-model".to_string(),
                 };
-
-                // Should not panic for unknown model
                 let result = update_model(args).await;
                 assert!(result.is_ok());
             });
+        });
+    }
+
+    #[test]
+    fn test_remove_model_not_found() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = RemoveArgs {
+                    model_name: "nonexistent-model".to_string(),
+                    yes: true,
+                };
+                let result = remove_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_remove_model_found() {
+        with_test_env(|| {
+            let mut registry = ModelRegistry::default();
+            registry.models.insert("test-model".to_string(), ModelInfo {
+                name: "test-model".to_string(),
+                path: get_models_dir().unwrap().join("test-model").to_string_lossy().to_string(),
+                source: "huggingface".to_string(),
+                dimensions: Some(8),
+                size_mb: Some(1.0),
+                downloaded_at: "2024-01-01T00:00:00Z".to_string(),
+                description: Some("Test model".to_string()),
+            });
+            save_model_registry(&registry).unwrap();
+            let model_path = get_models_dir().unwrap().join("test-model");
+            fs::write(&model_path, "dummy").unwrap();
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = RemoveArgs {
+                    model_name: "test-model".to_string(),
+                    yes: true,
+                };
+                let result = remove_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_distill_model_basic() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DistillArgs {
+                    input: "input-model".to_string(),
+                    output: "distilled-model".to_string(),
+                    dims: 128,
+                    force: true,
+                };
+                // This will call the simulated distill function
+                let result = distill_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_download_model_force_overwrite() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DownloadArgs {
+                    model_name: "test-model".to_string(),
+                    alias: None,
+                    force: true,
+                };
+                // Should succeed even if file exists
+                let model_path = get_models_dir().unwrap().join("test-model");
+                fs::write(&model_path, "dummy").unwrap();
+                let result = download_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_load_model_registry_corrupt_file() {
+        with_test_env(|| {
+            let registry_path = get_registry_path().unwrap();
+            fs::write(&registry_path, "not-json").unwrap();
+            let result = load_model_registry();
+            assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn test_save_model_registry_io_error() {
+        // Simulate unwritable directory
+        with_test_env(|| {
+            let registry = ModelRegistry::default();
+            let registry_path = get_registry_path().unwrap();
+            let parent = registry_path.parent().unwrap();
+            // Remove write permissions
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = fs::Permissions::from_mode(0o444);
+                fs::set_permissions(parent, perms).unwrap_or(());
+            }
+            let result = save_model_registry(&registry);
+            // Should be error on write
+            assert!(result.is_err());
         });
     }
 }

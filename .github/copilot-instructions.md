@@ -122,6 +122,8 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
 - **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
 - **`E0614: type `std::option::Option<&mut HeaderMap>` cannot be dereferenced`**: In `src/server/limit.rs`, the line `*req.headers_mut() = headers;` is causing a compilation error because `req.headers_mut()` returns an `Option<&mut HeaderMap>`, and you cannot directly dereference and assign to it.
+- **Invalid VS Code terminal profile color setting**: The terminal profile color setting in VS Code's `settings.json` only accepts predefined ANSI color names, not arbitrary hex codes. To fix this, replace the invalid hex color with the closest matching ANSI color name.
+- **Invalid VS Code terminal profile icon value**: The VS Code terminal profile setting only accepts predefined icon names. To fix this, change it to a valid icon from the allowed list, such as "terminal" (a generic terminal icon).
 
 **Key Log Messages**:
 
@@ -147,21 +149,19 @@ curl -X POST http://localhost:8080/v1/embeddings \
 
 6. **Rate Limiting**: Commented out rate limiting layer due to type mismatches with the `tower_governor` crate - marked for future resolution.
 
-7. **MCP Tools**: Fixed import issues and temporarily disabled problematic trait implementations in `mod.rs`.
+7. **MCP Tools**: Fixed import issues and temporarily disabled problematic trait implementations in `mod.rs`. Implemented conditional MCP support in the server.
 
 8. **API Key Management**: Fixed deprecated `rand::thread_rng()` usage and type annotation issues in `api_keys.rs`.
 
 9. **Documentation**: Removed unsupported `globs` attribute from `copilot-instructions.md`.
 
-10. **MCP Tool Compatibility Issues**: Disabled problematic MCP tools that were causing 24 compilation errors due to trait bound conflicts with the rmcp crate. Implemented conditional MCP support in the server.
+10. **Async TCP Listener**: Fixed `spawn_test_server` to use `tokio::net::TcpListener` instead of `std::net::TcpListener` and added proper `.await` calls.
 
-11. **Async TCP Listener**: Fixed `spawn_test_server` to use `tokio::net::TcpListener` instead of `std::net::TcpListener` and added proper `.await` calls.
+11. **Axum Server API**: Updated server spawning to use the correct Axum 0.8 API pattern (`axum::serve(listener, router)`).
 
-12. **Axum Server API**: Updated server spawning to use the correct Axum 0.8 API pattern (`axum::serve(listener, router)`).
+12. **Example Compilation**: Fixed `api_key_demo.rs` to use correct API methods and struct fields from the updated ApiKeyManager.
 
-13. **Example Compilation**: Fixed `api_key_demo.rs` to use correct API methods and struct fields from the updated ApiKeyManager.
-
-14. **Test Database Setup**: Corrected the test manager to use proper database paths instead of incompatible sled Config patterns.
+13. **Test Database Setup**: Corrected the test manager to use proper database paths instead of incompatible sled Config patterns.
 
 ### Current Status:
 - ✅ **Compiles successfully** with `cargo check` and `cargo build`
@@ -187,7 +187,7 @@ The project is now in a functional state for basic HTTP API and CLI operations. 
 - **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err(|e| anyhow::anyhow!(e))`.
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 - **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
@@ -239,3 +239,4 @@ When documenting these aspects:
 6. **Do not create `agent.md`**. The existing `copilot-instructions.md` serves the same purpose.
 
 The AI coding assistant must add a large number of tests, so go through and quickly and efficiently add tests for every method, and once you can not find another test to add, then you can check the percentage. The AI coding assistant does not need to run tarpaulin after every test it adds. You **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
+The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands

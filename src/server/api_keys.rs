@@ -531,4 +531,145 @@ mod tests {
         // Full middleware testing requires tower-test, so just verify compilation
         assert!(true); // Function exists and has correct signature
     }
+
+    #[tokio::test]
+    async fn test_list_api_keys() {
+        let (manager, _temp_dir) = test_manager();
+        
+        // Generate a few API keys
+        let request1 = ApiKeyRequest {
+            client_name: "client1".to_string(),
+            description: Some("First client".to_string()),
+            email: None,
+        };
+        let request2 = ApiKeyRequest {
+            client_name: "client2".to_string(),
+            description: None,
+            email: Some("client2@example.com".to_string()),
+        };
+        
+        manager.generate_api_key(request1).await.unwrap();
+        manager.generate_api_key(request2).await.unwrap();
+        
+        // List all keys
+        let keys = manager.list_api_keys().await;
+        assert_eq!(keys.len(), 2);
+        
+        // Check that both clients are present
+        let client_names: Vec<String> = keys.iter().map(|k| k.client_name.clone()).collect();
+        assert!(client_names.contains(&"client1".to_string()));
+        assert!(client_names.contains(&"client2".to_string()));
+        
+        // Check that sensitive data is not exposed
+        for key in &keys {
+            assert!(key.active);
+            assert!(key.created_at > 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_register_api_key_handler() {
+        let (manager, _temp_dir) = test_manager();
+        let manager = Arc::new(manager);
+        
+        let request = ApiKeyRequest {
+            client_name: "handler-test-client".to_string(),
+            description: Some("Handler test".to_string()),
+            email: None,
+        };
+        
+        let result = register_api_key(
+            axum::Extension(manager.clone()),
+            Json(request),
+        ).await;
+        
+        assert!(result.is_ok());
+        let Json(response) = result.unwrap();
+        assert!(response.api_key.starts_with("embed-"));
+        assert_eq!(response.key_info.client_name, "handler-test-client");
+    }
+
+    #[tokio::test]
+    async fn test_list_api_keys_handler() {
+        let (manager, _temp_dir) = test_manager();
+        let manager = Arc::new(manager);
+        
+        // Generate an API key first
+        let request = ApiKeyRequest {
+            client_name: "handler-list-test".to_string(),
+            description: None,
+            email: None,
+        };
+        manager.generate_api_key(request).await.unwrap();
+        
+        // Test the handler
+        let result = list_api_keys(axum::Extension(manager)).await;
+        let Json(keys) = result;
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].client_name, "handler-list-test");
+    }
+
+    #[tokio::test]
+    async fn test_revoke_api_key_handler() {
+        let (manager, _temp_dir) = test_manager();
+        let manager = Arc::new(manager);
+        
+        // Generate an API key first
+        let request = ApiKeyRequest {
+            client_name: "handler-revoke-test".to_string(),
+            description: None,
+            email: None,
+        };
+        let response = manager.generate_api_key(request).await.unwrap();
+        let key_id = response.key_info.id.clone();
+        
+        // Test successful revocation
+        let revoke_request = RevokeKeyRequest { key_id: key_id.clone() };
+        let result = revoke_api_key(
+            axum::Extension(manager.clone()),
+            Json(revoke_request),
+        ).await;
+        
+        assert!(result.is_ok());
+        let Json(response) = result.unwrap();
+        assert_eq!(response["message"], "API key revoked successfully");
+        assert_eq!(response["key_id"], key_id);
+        
+        // Verify the key is actually revoked
+        let keys = manager.list_api_keys().await;
+        assert_eq!(keys.len(), 1);
+        assert!(!keys[0].active);
+        
+        // Test revoking non-existent key
+        let revoke_request = RevokeKeyRequest { key_id: "non-existent".to_string() };
+        let result = revoke_api_key(
+            axum::Extension(manager),
+            Json(revoke_request),
+        ).await;
+        
+        assert!(result.is_err());
+        assert_eq!(result.err().unwrap(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_sha256_digest() {
+        let input = b"test input";
+        let hash = sha256::digest(input);
+        
+        // SHA-256 hash should be 64 characters long (32 bytes * 2 hex chars per byte)
+        assert_eq!(hash.len(), 64);
+        
+        // Hash should be consistent
+        let hash2 = sha256::digest(input);
+        assert_eq!(hash, hash2);
+        
+        // Different input should produce different hash
+        let different_hash = sha256::digest(b"different input");
+        assert_ne!(hash, different_hash);
+        
+        // Test with empty input
+        let empty_hash = sha256::digest(b"");
+        assert_eq!(empty_hash.len(), 64);
+        assert_ne!(empty_hash, hash);
+    }
 }
