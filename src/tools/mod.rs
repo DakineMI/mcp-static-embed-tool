@@ -744,4 +744,107 @@ mod tests {
         assert_eq!(deserialized.input_count, 2);
         assert_eq!(deserialized.processing_time_ms, 200);
     }
+
+    #[test]
+    fn test_embed_params_default_model() {
+        let params = EmbedParams {
+            input: "test".to_string(),
+            model: None,
+        };
+        
+        assert!(params.model.is_none());
+        assert_eq!(params.input, "test");
+    }
+
+    #[test]
+    fn test_batch_embed_params_empty() {
+        let params = BatchEmbedParams {
+            inputs: vec![],
+            model: None,
+        };
+        
+        assert_eq!(params.inputs.len(), 0);
+    }
+
+    #[test]
+    fn test_model_info_params_construction() {
+        let model_name = "test-model".to_string();
+        let params = ModelInfoParams {
+            model: model_name.clone(),
+        };
+        
+        assert_eq!(params.model, model_name);
+    }
+
+    #[test]
+    fn test_model_distill_params_with_dims() {
+        let params = ModelDistillParams {
+            input_model: "in".to_string(),
+            output_name: "out".to_string(),
+            dimensions: Some(256),
+        };
+        
+        assert_eq!(params.dimensions, Some(256));
+    }
+
+    #[test]
+    fn test_embedding_response_zero_time() {
+        let response = EmbeddingResponse {
+            embedding: vec![],
+            model: "test".to_string(),
+            dimensions: 0,
+            processing_time_ms: 0,
+        };
+        
+        assert_eq!(response.processing_time_ms, 0);
+        assert_eq!(response.embedding.len(), 0);
+    }
+
+    #[test]
+    fn test_batch_embedding_response_zero_inputs() {
+        let response = BatchEmbeddingResponse {
+            embeddings: vec![],
+            model: "test".to_string(),
+            dimensions: 0,
+            processing_time_ms: 0,
+            input_count: 0,
+        };
+        
+        assert_eq!(response.input_count, 0);
+        assert_eq!(response.embeddings.len(), 0);
+    }
+
+    #[test]
+    fn test_embedding_service_models_lock() {
+        let service = EmbeddingService::new("test-lock".to_string());
+        
+        // Test that we can acquire lock
+        {
+            let _lock = service.models.try_lock();
+            assert!(_lock.is_ok());
+        }
+        
+        // Test that we can acquire again after release
+        {
+            let _lock = service.models.try_lock();
+            assert!(_lock.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_embedding_service_created_at() {
+        let service = EmbeddingService::new("test-time".to_string());
+        let elapsed = service.created_at.elapsed();
+        
+        // Should be very recent
+        assert!(elapsed < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn test_load_model_nonexistent_path() {
+        // Attempt to load a model from a non-existent path should return an error
+        let service = EmbeddingService::new("test-load".to_string());
+        let result = service.load_model("missing", "/path/that/does/not/exist").await;
+        assert!(result.is_err());
+    }
 }

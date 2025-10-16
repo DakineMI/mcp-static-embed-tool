@@ -361,6 +361,7 @@ mod tests {
     use std::env;
     use std::fs;
     use std::sync::Mutex;
+    use tempfile::{TempDir, NamedTempFile};
 
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -372,33 +373,31 @@ mod tests {
             // If the mutex is poisoned, we can still use it
             poisoned.into_inner()
         });
-        // Save original HOME
+        // Save original HOME and USERPROFILE
         let original_home = env::var("HOME").ok();
         let original_userprofile = env::var("USERPROFILE").ok();
 
-        // Create a temporary directory for testing
-        let temp_dir = std::env::temp_dir().join("embed_tool_config_test").join(format!("test_{}", std::process::id()));
-        fs::create_dir_all(&temp_dir).unwrap();
-
-        // Set temporary HOME
-        unsafe { env::set_var("HOME", &temp_dir) };
+        // Create a unique temporary directory and point HOME to it
+        let temp_home = TempDir::new().expect("failed to create temp home dir");
+        let temp_home_path = temp_home.path().to_path_buf();
+        env::set_var("HOME", &temp_home_path);
+        // Also set USERPROFILE for Windows compatibility
+        env::set_var("USERPROFILE", &temp_home_path);
 
         let result = f();
 
-        // Cleanup
-        let _ = fs::remove_dir_all(&temp_dir);
         // Restore original environment
-        if let Some(home) = original_home {
-            unsafe { env::set_var("HOME", home) };
-        } else {
-            unsafe { env::remove_var("HOME") };
+        match original_home {
+            Some(home) => env::set_var("HOME", home),
+            None => env::remove_var("HOME"),
         }
-        if let Some(userprofile) = original_userprofile {
-            unsafe { env::set_var("USERPROFILE", userprofile) };
-        } else {
-            unsafe { env::remove_var("USERPROFILE") };
+        match original_userprofile {
+            Some(userprofile) => env::set_var("USERPROFILE", userprofile),
+            None => env::remove_var("USERPROFILE"),
         }
 
+        // TempDir cleans up automatically when dropped here
+        drop(temp_home);
         result
     }
 
@@ -541,6 +540,59 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_embed_command_executes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let args = EmbedArgs { 
+                text: "Hello test".to_string(), 
+                model: Some("potion-32M".to_string()), 
+                format: "json".to_string() 
+            };
+            // Should print guidance and return Ok
+            let result = handle_embed_command(args, None).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_handle_batch_command_missing_input() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let args = BatchArgs {
+                input: PathBuf::from("/definitely/not/exist/input.json"),
+                output: None,
+                model: None,
+                format: "json".to_string(),
+                batch_size: 32,
+            };
+            // Should return Ok after printing error when file missing
+            let result = handle_batch_command(args, None).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
+    fn test_handle_batch_command_with_input_file() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let input_path = tmp.path().join("embed_tool_batch_test_input.json");
+        fs::write(&input_path, "[\"a\", \"b\"]").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let args = BatchArgs {
+                input: input_path.clone(),
+                output: Some(tmp.path().join("embed_tool_batch_test_output.json")),
+                model: Some("potion-32M".to_string()),
+                format: "csv".to_string(),
+                batch_size: 10,
+            };
+            let result = handle_batch_command(args, None).await;
+            assert!(result.is_ok());
+        });
+    }
+
+    #[test]
     fn test_set_config_auth_require_api_key() {
         with_test_env(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
@@ -633,8 +685,9 @@ mod tests {
         with_test_env(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                // Create a custom config file
-                let custom_config_path = std::env::temp_dir().join("test_custom_config.toml");
+                // Create a custom config file in a temp dir
+                let temp_dir = TempDir::new().unwrap();
+                let custom_config_path = temp_dir.path().join("test_custom_config.toml");
                 let custom_config = r#"
 [server]
 default_port = 9999
@@ -665,9 +718,7 @@ json_format = false
                 assert_eq!(config.server.default_port, 9999);
                 assert_eq!(config.server.default_bind, "127.0.0.1");
                 assert_eq!(config.server.default_model, "potion-32M");
-
-                // Cleanup
-                std::fs::remove_file(custom_config_path).unwrap();
+                // TempDir cleans up automatically
             });
         });
     }
@@ -678,27 +729,28 @@ json_format = false
             let mut config = load_config(None).unwrap();
             config.server.default_port = 7777;
 
-            let temp_path = std::env::temp_dir().join("test_save_config.toml");
+            // Write to a file inside a dedicated temp directory
+            let temp_dir = TempDir::new().unwrap();
+            let temp_path = temp_dir.path().join("test_save_config.toml");
             let result = save_config(&config, Some(temp_path.clone()));
             assert!(result.is_ok());
 
             // Verify the file was written
             let content = std::fs::read_to_string(&temp_path).unwrap();
             assert!(content.contains("default_port = 7777"));
-
-            // Cleanup
-            std::fs::remove_file(temp_path).unwrap();
+            // TempDir cleans up automatically
         });
     }
 
     #[test]
     fn test_get_config_path() {
         with_test_env(|| {
-            let path = get_config_path(None);
-            assert!(path.is_ok());
-            // Should be in the temp directory for tests
-            let path_str = path.unwrap().to_str().unwrap().to_string();
-            assert!(path_str.contains("test_") && path_str.contains(".embed-tool"));
+            // Ensure the computed path is under HOME and ends with .embed-tool/config.toml
+            let home = env::var("HOME").unwrap();
+            let path = get_config_path(None).unwrap();
+            let path_str = path.to_string_lossy();
+            assert!(path_str.ends_with(".embed-tool/config.toml"));
+            assert!(path_str.starts_with(&home));
         });
     }
 
@@ -1054,7 +1106,8 @@ json_format = false
         with_test_env(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let custom_path = std::env::temp_dir().join("custom_config.toml");
+                let temp_dir = TempDir::new().unwrap();
+                let custom_path = temp_dir.path().join("custom_config.toml");
                 let result = show_config(Some(custom_path)).await;
                 assert!(result.is_ok());
             });
@@ -1128,15 +1181,14 @@ json_format = false
         with_test_env(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                // Create invalid TOML file
-                let config_path = std::env::temp_dir().join("invalid_config.toml");
+                // Create invalid TOML file in temp dir
+                let temp_dir = TempDir::new().unwrap();
+                let config_path = temp_dir.path().join("invalid_config.toml");
                 std::fs::write(&config_path, "invalid [toml content").unwrap();
 
                 let result = load_config(Some(config_path.clone()));
                 assert!(result.is_err());
-
-                // Cleanup
-                let _ = std::fs::remove_file(config_path);
+                // TempDir cleans automatically
             });
         });
     }
@@ -1147,21 +1199,15 @@ json_format = false
         let original_home = std::env::var("HOME").ok();
         let original_userprofile = std::env::var("USERPROFILE").ok();
         
-        unsafe {
-            std::env::remove_var("HOME");
-            std::env::remove_var("USERPROFILE");
-        }
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
         
         let result = get_config_path(None);
         assert!(result.is_err());
         
         // Restore environment
-        if let Some(home) = original_home {
-            unsafe { std::env::set_var("HOME", home) };
-        }
-        if let Some(userprofile) = original_userprofile {
-            unsafe { std::env::set_var("USERPROFILE", userprofile) };
-        }
+        if let Some(home) = original_home { std::env::set_var("HOME", home); }
+        if let Some(userprofile) = original_userprofile { std::env::set_var("USERPROFILE", userprofile); }
     }
 
     #[test]
@@ -1184,14 +1230,13 @@ json_format = false
         with_test_env(|| {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
-                let temp_dir = std::env::temp_dir().join("embed_tool_batch_test2");
-                fs::create_dir_all(&temp_dir).unwrap();
-                let input_file = temp_dir.join("input.json");
+                let temp_dir = TempDir::new().unwrap();
+                let input_file = temp_dir.path().join("input.json");
                 fs::write(&input_file, "[]").unwrap();
 
                 let args = BatchArgs {
                     input: input_file.clone(),
-                    output: Some(temp_dir.join("output.json")),
+                    output: Some(temp_dir.path().join("output.json")),
                     model: None,
                     format: "json".to_string(),
                     batch_size: 32,
@@ -1199,9 +1244,7 @@ json_format = false
 
                 let result = handle_batch_command(args, None).await;
                 assert!(result.is_ok());
-
-                // Cleanup
-                let _ = fs::remove_dir_all(&temp_dir);
+                // TempDir cleans automatically
             });
         });
     }

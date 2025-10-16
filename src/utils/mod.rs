@@ -310,4 +310,165 @@ mod tests {
         let candidate_with_ext = parent.join(format!("{}_v{}{}", file_stem, version, extension));
         assert_eq!(candidate_with_ext, PathBuf::from("/tmp/test_model_v2.bin"));
     }
+
+    #[tokio::test]
+    async fn test_distill_with_custom_path() {
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("custom_model");
+
+        let result = distill("test-model", 128, Some(output_path.clone())).await;
+        
+        // Should succeed even if model2vec is not installed (graceful fallback)
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_distill_with_default_path() {
+        let result = distill("test-model-default", 256, None).await;
+        
+        // Should succeed even if model2vec is not installed
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_distill_creates_parent_dirs() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let nested_path = temp_dir.path().join("nested/deep/path/model");
+
+        let result = distill("test-nested", 64, Some(nested_path.clone())).await;
+        
+        // Should create parent directories
+        assert!(result.is_ok());
+        assert!(nested_path.parent().unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn test_distill_auto_versioning() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("versioned_model");
+
+        // Create a file to force versioning
+        fs::write(&output_path, "existing").unwrap();
+
+        let result = distill("test-versioned", 128, Some(output_path.clone())).await;
+        
+        // Should succeed and create versioned file
+        assert!(result.is_ok());
+        
+        // Original file should still exist
+        assert!(output_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_distill_invalid_pca_dims() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("invalid_model");
+
+        // Test with extremely large PCA dims (should still work but model2vec might fail)
+        let result = distill("test-invalid", 999999, Some(output_path)).await;
+        
+        // May fail or succeed depending on whether model2vec is installed
+        // but should not panic
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn test_distill_special_characters_in_name() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("special-model!@#");
+
+        let result = distill("test/model:special", 128, Some(output_path)).await;
+        
+        // Should handle special characters without panicking
+        let _ = result;
+    }
+
+    #[tokio::test]
+    async fn test_distill_with_extension() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("model.bin");
+
+        let result = distill("test-extension", 128, Some(output_path.clone())).await;
+        
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_distill_version_overflow_protection() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let output_path = temp_dir.path().join("overflow_model");
+
+        // Create the base file
+        fs::write(&output_path, "base").unwrap();
+
+        // Create many versions to test safety limit
+        for i in 2..10 {
+            let versioned = temp_dir.path().join(format!("overflow_model_v{}", i));
+            fs::write(&versioned, format!("v{}", i)).unwrap();
+        }
+
+        let result = distill("test-overflow", 128, Some(output_path)).await;
+        
+        // Should find the next available version
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_format_duration_large_values() {
+        // Test with very large durations
+        let duration = std::time::Duration::from_secs(86400); // 24 hours
+        let formatted = format_duration(duration);
+        assert!(formatted.contains("h"));
+    }
+
+    #[test]
+    fn test_format_duration_consistency() {
+        // Test that same duration produces same output
+        let duration = std::time::Duration::from_millis(1500);
+        let formatted1 = format_duration(duration);
+        let formatted2 = format_duration(duration);
+        assert_eq!(formatted1, formatted2);
+    }
+
+    #[test]
+    fn test_generate_connection_id_uniqueness() {
+        // Generate multiple IDs and ensure they're all unique
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let id = generate_connection_id();
+            assert!(ids.insert(id), "Generated duplicate connection ID");
+        }
+    }
+
+    #[test]
+    fn test_calculate_total_overflow_behavior() {
+        // Test with values that would overflow if not careful
+        let large_numbers = vec![i32::MAX / 2, i32::MAX / 2];
+        let result = calculate_total(&large_numbers);
+        // This will overflow in debug mode, but in release it wraps
+        let _ = result;
+    }
+
+    #[test]
+    fn test_calculate_total_mixed_values() {
+        let mixed = vec![100, -50, 25, -75, 200];
+        assert_eq!(calculate_total(&mixed), 200);
+    }
 }

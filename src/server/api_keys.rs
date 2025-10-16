@@ -672,4 +672,242 @@ mod tests {
         assert_eq!(empty_hash.len(), 64);
         assert_ne!(empty_hash, hash);
     }
+
+    #[tokio::test]
+    async fn test_manager_new_creates_database() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db").to_str().unwrap().to_string();
+        
+        let result = ApiKeyManager::new(&db_path);
+        assert!(result.is_ok());
+        
+        // Database file should exist
+        assert!(std::path::Path::new(&db_path).exists());
+    }
+
+    #[tokio::test]
+    async fn test_validate_api_key_malformed() {
+        let (manager, _temp) = test_manager();
+        
+        // Test with malformed API key
+        let result = manager.validate_api_key("not-an-api-key").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_validate_api_key_missing_prefix() {
+        let (manager, _temp) = test_manager();
+        
+        // Test without "embed-" prefix
+        let result = manager.validate_api_key("abcdef1234567890").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_api_keys_empty() {
+        let (manager, _temp) = test_manager();
+        
+        let keys = manager.list_api_keys().await;
+        assert_eq!(keys.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_revoke_api_key_nonexistent() {
+        let (manager, _temp) = test_manager();
+        
+        let result = manager.revoke_api_key("nonexistent-id").await;
+        assert_eq!(result, false);
+    }
+
+    #[tokio::test]
+    async fn test_generate_api_key_duplicate_name() {
+        let (manager, _temp) = test_manager();
+        
+        let request1 = ApiKeyRequest {
+            client_name: "duplicate-name".to_string(),
+            description: None,
+            email: None,
+        };
+        
+        let result1 = manager.generate_api_key(request1).await;
+        assert!(result1.is_ok());
+        
+        let request2 = ApiKeyRequest {
+            client_name: "duplicate-name".to_string(),
+            description: None,
+            email: None,
+        };
+        
+        let result2 = manager.generate_api_key(request2).await;
+        // Should allow duplicate names (different IDs)
+        assert!(result2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_lifecycle() {
+        let (manager, _temp) = test_manager();
+        
+        // Generate
+        let request = ApiKeyRequest {
+            client_name: "lifecycle-test".to_string(),
+            description: None,
+            email: None,
+        };
+        let response = manager.generate_api_key(request).await.unwrap();
+        
+        // Validate
+        let validated = manager.validate_api_key(&response.api_key).await;
+        assert!(validated.is_some());
+        assert_eq!(validated.unwrap().client_name, "lifecycle-test");
+        
+        // List
+        let keys = manager.list_api_keys().await;
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].client_name, "lifecycle-test");
+        
+        // Revoke
+        let revoked = manager.revoke_api_key(&response.key_info.id).await;
+        assert_eq!(revoked, true);
+        
+        // Validate after revocation should fail
+        let validated_after = manager.validate_api_key(&response.api_key).await;
+        assert!(validated_after.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_request_deserialization() {
+        let json = r#"{"client_name":"test-request","description":null,"email":null}"#;
+        let deserialized: ApiKeyRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.client_name, "test-request");
+        assert!(deserialized.description.is_none());
+        assert!(deserialized.email.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_response_serialization() {
+        let info = ApiKeyInfo {
+            id: "id-123".to_string(),
+            client_name: "test-response".to_string(),
+            created_at: 1704067200,
+            last_used: None,
+            rate_limit_tier: "standard".to_string(),
+            max_requests_per_minute: 60,
+            active: true,
+            description: None,
+        };
+        
+        let response = ApiKeyResponse {
+            api_key: "embed-test123".to_string(),
+            key_info: info,
+        };
+        
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("embed-test123"));
+        assert!(json.contains("test-response"));
+    }
+
+    #[tokio::test]
+    async fn test_api_key_info_serialization() {
+        let info = ApiKeyInfo {
+            id: "info-123".to_string(),
+            client_name: "test-info".to_string(),
+            created_at: 1704067200,
+            last_used: None,
+            rate_limit_tier: "standard".to_string(),
+            max_requests_per_minute: 60,
+            active: true,
+            description: Some("Test description".to_string()),
+        };
+        
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("test-info"));
+        assert!(json.contains("Test description"));
+    }
+
+    #[tokio::test]
+    async fn test_api_key_info_with_last_used() {
+        let info = ApiKeyInfo {
+            id: "used-123".to_string(),
+            client_name: "test-used".to_string(),
+            created_at: 1704067200,
+            last_used: Some(1704153600),
+            rate_limit_tier: "premium".to_string(),
+            max_requests_per_minute: 120,
+            active: true,
+            description: None,
+        };
+        
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("1704153600"));
+    }
+
+    #[test]
+    fn test_sha256_digest_hex_format() {
+        let hash = sha256::digest(b"test");
+        
+        // Should only contain hex characters
+        for c in hash.chars() {
+            assert!(c.is_ascii_hexdigit());
+        }
+    }
+
+    #[test]
+    fn test_sha256_digest_large_input() {
+        let large_input = vec![0u8; 10000];
+        let hash = sha256::digest(&large_input);
+        
+        // Should still produce 64-char hash
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[tokio::test]
+    async fn test_generate_api_key_empty_name() {
+        let (manager, _temp) = test_manager();
+        
+        let request = ApiKeyRequest {
+            client_name: "".to_string(),
+            description: None,
+            email: None,
+        };
+        
+        let result = manager.generate_api_key(request).await;
+        // Should still succeed
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_generate_api_key_special_characters() {
+        let (manager, _temp) = test_manager();
+        
+        let request = ApiKeyRequest {
+            client_name: "test!@#$%^&*()".to_string(),
+            description: Some("Special chars test".to_string()),
+            email: Some("test@example.com".to_string()),
+        };
+        
+        let result = manager.generate_api_key(request).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_api_key_format() {
+        let (manager, _temp) = test_manager();
+        
+        let request = ApiKeyRequest {
+            client_name: "format-test".to_string(),
+            description: None,
+            email: None,
+        };
+        
+        let response = manager.generate_api_key(request).await.unwrap();
+        
+        // API key should start with "embed-"
+        assert!(response.api_key.starts_with("embed-"));
+        
+        // Should have sufficient length
+        assert!(response.api_key.len() > 20);
+        
+        // Key ID should not be empty
+        assert!(!response.key_info.id.is_empty());
+    }
 }

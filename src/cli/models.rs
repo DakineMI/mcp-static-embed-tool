@@ -671,4 +671,267 @@ mod tests {
             assert!(result.is_err());
         });
     }
+
+    #[test]
+    fn test_handle_model_command_list() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let result = handle_model_command(ModelAction::List, None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_model_command_download() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DownloadArgs {
+                    model_name: "test-cmd".to_string(),
+                    alias: None,
+                    force: false,
+                };
+                let result = handle_model_command(ModelAction::Download(args), None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_model_command_info() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = InfoArgs {
+                    model_name: "potion-8M".to_string(),
+                };
+                let result = handle_model_command(ModelAction::Info(args), None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_model_command_distill() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DistillArgs {
+                    input: "input".to_string(),
+                    output: "output".to_string(),
+                    dims: 64,
+                    force: false,
+                };
+                let result = handle_model_command(ModelAction::Distill(args), None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_model_command_update() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = UpdateArgs {
+                    model_name: "test-update".to_string(),
+                };
+                let result = handle_model_command(ModelAction::Update(args), None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_handle_model_command_remove() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = RemoveArgs {
+                    model_name: "test-remove".to_string(),
+                    yes: true,
+                };
+                let result = handle_model_command(ModelAction::Remove(args), None).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_download_model_without_alias() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DownloadArgs {
+                    model_name: "test-no-alias".to_string(),
+                    alias: None,
+                    force: false,
+                };
+                let result = download_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_download_model_existing_without_force() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let model_name = "existing-model".to_string();
+                let model_path = get_models_dir().unwrap().join(&model_name);
+                fs::create_dir_all(model_path.parent().unwrap()).unwrap();
+                fs::write(&model_path, "dummy").unwrap();
+                
+                let args = DownloadArgs {
+                    model_name: model_name.clone(),
+                    alias: None,
+                    force: false,
+                };
+                let result = download_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_distill_model_without_force() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = DistillArgs {
+                    input: "input2".to_string(),
+                    output: "output2".to_string(),
+                    dims: 256,
+                    force: false,
+                };
+                let result = distill_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_remove_model_without_confirmation() {
+        with_test_env(|| {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = RemoveArgs {
+                    model_name: "test-no-confirm".to_string(),
+                    yes: false,
+                };
+                let result = remove_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_list_models_with_entries() {
+        with_test_env(|| {
+            let mut registry = ModelRegistry::default();
+            registry.models.insert("model1".to_string(), ModelInfo {
+                name: "model1".to_string(),
+                path: "/path/to/model1".to_string(),
+                source: "local".to_string(),
+                dimensions: Some(128),
+                size_mb: Some(50.5),
+                downloaded_at: "2024-01-01T00:00:00Z".to_string(),
+                description: Some("Test model 1".to_string()),
+            });
+            save_model_registry(&registry).unwrap();
+            
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let result = list_models().await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_update_model_with_registry_entry() {
+        with_test_env(|| {
+            let mut registry = ModelRegistry::default();
+            registry.models.insert("update-test".to_string(), ModelInfo {
+                name: "update-test".to_string(),
+                path: "/path/to/update-test".to_string(),
+                source: "huggingface".to_string(),
+                dimensions: Some(64),
+                size_mb: Some(25.0),
+                downloaded_at: "2024-01-01T00:00:00Z".to_string(),
+                description: None,
+            });
+            save_model_registry(&registry).unwrap();
+            
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = UpdateArgs {
+                    model_name: "update-test".to_string(),
+                };
+                let result = update_model(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_show_model_info_from_registry() {
+        with_test_env(|| {
+            let mut registry = ModelRegistry::default();
+            registry.models.insert("registry-model".to_string(), ModelInfo {
+                name: "registry-model".to_string(),
+                path: "/path/to/registry-model".to_string(),
+                source: "distilled".to_string(),
+                dimensions: Some(32),
+                size_mb: Some(10.0),
+                downloaded_at: "2024-01-01T00:00:00Z".to_string(),
+                description: Some("From registry".to_string()),
+            });
+            save_model_registry(&registry).unwrap();
+            
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let args = InfoArgs {
+                    model_name: "registry-model".to_string(),
+                };
+                let result = show_model_info(args).await;
+                assert!(result.is_ok());
+            });
+        });
+    }
+
+    #[test]
+    fn test_get_directory_size_empty_dir() {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let size = get_directory_size(&temp_dir.path().to_path_buf());
+        assert!(size.is_some());
+        assert_eq!(size.unwrap(), 0.0);
+    }
+
+    #[test]
+    fn test_model_info_all_fields() {
+        let info = ModelInfo {
+            name: "full-info".to_string(),
+            path: "/full/path".to_string(),
+            source: "local".to_string(),
+            dimensions: Some(512),
+            size_mb: Some(100.5),
+            downloaded_at: "2024-01-01T12:00:00Z".to_string(),
+            description: Some("Full description".to_string()),
+        };
+        
+        assert_eq!(info.name, "full-info");
+        assert_eq!(info.dimensions, Some(512));
+        assert_eq!(info.size_mb, Some(100.5));
+    }
+
+    #[test]
+    fn test_model_registry_default() {
+        let registry = ModelRegistry::default();
+        assert!(registry.models.is_empty());
+    }
 }

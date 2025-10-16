@@ -83,4 +83,11 @@ mod tests {
         let addr: Result<SocketAddr, _> = invalid_addr.parse();
         assert!(addr.is_err());
     }
+
+    #[tokio::test]
+    async fn test_start_http_server_invalid_bind() {
+        // Call start_http_server with an invalid bind address to cover fast-fail path
+        let res = start_http_server("invalid-address", 10, 20).await;
+        assert!(res.is_err());
+    }
 }
