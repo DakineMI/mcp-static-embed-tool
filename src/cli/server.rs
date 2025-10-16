@@ -282,6 +282,10 @@ async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
 }
 
 fn terminate_process(pid: u32) -> AnyhowResult<()> {
+    if !is_process_running(pid) {
+        return Ok(());
+    }
+    
     #[cfg(unix)]
     {
         unsafe {

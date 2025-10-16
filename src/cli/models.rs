@@ -595,6 +595,7 @@ mod tests {
             });
             save_model_registry(&registry).unwrap();
             let model_path = get_models_dir().unwrap().join("test-model");
+            fs::create_dir_all(model_path.parent().unwrap()).unwrap();
             fs::write(&model_path, "dummy").unwrap();
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
@@ -638,6 +639,7 @@ mod tests {
                 };
                 // Should succeed even if file exists
                 let model_path = get_models_dir().unwrap().join("test-model");
+                fs::create_dir_all(model_path.parent().unwrap()).unwrap();
                 fs::write(&model_path, "dummy").unwrap();
                 let result = download_model(args).await;
                 assert!(result.is_ok());
@@ -649,6 +651,7 @@ mod tests {
     fn test_load_model_registry_corrupt_file() {
         with_test_env(|| {
             let registry_path = get_registry_path().unwrap();
+            fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
             fs::write(&registry_path, "not-json").unwrap();
             let result = load_model_registry();
             assert!(result.is_err());
@@ -661,14 +664,8 @@ mod tests {
         with_test_env(|| {
             let registry = ModelRegistry::default();
             let registry_path = get_registry_path().unwrap();
-            let parent = registry_path.parent().unwrap();
-            // Remove write permissions
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let perms = fs::Permissions::from_mode(0o444);
-                fs::set_permissions(parent, perms).unwrap_or(());
-            }
+            // Create registry_path as a directory to cause write error
+            fs::create_dir_all(&registry_path).unwrap();
             let result = save_model_registry(&registry);
             // Should be error on write
             assert!(result.is_err());

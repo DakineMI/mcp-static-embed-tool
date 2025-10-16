@@ -24,30 +24,6 @@ struct ServerConfig {
     tls_key_path: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct AuthConfig {
-    require_api_key: bool,
-    registration_enabled: bool,
-    api_key_header: String,
-    api_key_prefix: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct ModelConfig {
-    models_dir: Option<String>,
-    auto_download: bool,
-    default_distill_dims: usize,
-}
-
-#[derive(Serialize, Deserialize)]
-struct LoggingConfig {
-    level: String,
-    file: Option<String>,
-    json_format: bool,
-    max_file_size: Option<u64>,
-    max_files: Option<u32>,
-}
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -64,25 +40,39 @@ impl Default for ServerConfig {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct AuthConfig {
+    require_api_key: bool,
+    registration_enabled: bool,
+    api_key_header: String,
+    api_key_prefix: String,
+}
+
 impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             require_api_key: true,
             registration_enabled: true,
-            api_key_header: "X-API-Key".to_string(),
-            api_key_prefix: "Bearer ".to_string(),
+            api_key_header: "Authorization".to_string(),
+            api_key_prefix: "embed-".to_string(),
         }
     }
 }
 
-impl Default for ModelConfig {
-    fn default() -> Self {
-        Self {
-            models_dir: None,
-            auto_download: true,
-            default_distill_dims: 128,
-        }
-    }
+#[derive(Serialize, Deserialize, Default)]
+struct ModelConfig {
+    models_dir: Option<String>,
+    auto_download: bool,
+    default_distill_dims: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct LoggingConfig {
+    level: String,
+    file: Option<String>,
+    json_format: bool,
+    max_file_size: Option<u64>,
+    max_files: Option<u32>,
 }
 
 impl Default for LoggingConfig {

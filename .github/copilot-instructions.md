@@ -239,4 +239,14 @@ When documenting these aspects:
 6. **Do not create `agent.md`**. The existing `copilot-instructions.md` serves the same purpose.
 
 The AI coding assistant must add a large number of tests, so go through and quickly and efficiently add tests for every method, and once you can not find another test to add, then you can check the percentage. The AI coding assistant does not need to run tarpaulin after every test it adds. You **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
-The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands
+The AI coding assistant does not need to run tarpaulin after every test it adds. You **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
+
+The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands. The AI coding assistant **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
+
+The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands.
+
+**All requirements must be met:**
+
+- Every method of every file **MUST** have a test
+- **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. 
+- The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands

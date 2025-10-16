@@ -684,12 +684,11 @@ mod tests {
 
     #[test]
     fn test_start_args_from_arg_matches() {
-        let cmd = StartArgs::augment_args(Command::new("start"));
-        let matches = cmd.get_matches_from(vec!["start", "--port", "8080", "--bind", "127.0.0.1"]);
+        use clap::Command;
         
-        let result = StartArgs::from_arg_matches(&matches);
-        assert!(result.is_ok());
-        let args = result.unwrap();
+        let matches = Command::new("test")
+            .get_matches_from(vec!["test", "--port", "8080", "--bind", "127.0.0.1"]);
+        let args = StartArgs::from_arg_matches(&matches).unwrap();
         assert_eq!(args.port, 8080);
         assert_eq!(args.bind, "127.0.0.1");
     }
@@ -1016,4 +1015,232 @@ mod tests {
             _ => panic!("Expected Model Distill command"),
         }
     }
+
+        #[test]
+        fn test_server_action_from_matches_start() {
+            // Test ServerAction::from_arg_matches for start
+            let args = vec!["embed-tool", "server", "start", "--port", "9000", "--bind", "127.0.0.1"];
+            let cli = Cli::try_parse_from(args).unwrap();
+        
+            match cli.command {
+                Commands::Server { action: ServerAction::Start(start_args) } => {
+                    assert_eq!(start_args.port, 9000);
+                    assert_eq!(start_args.bind, "127.0.0.1");
+                }
+                _ => panic!("Expected Server::Start"),
+            }
+        }
+
+        #[test]
+        fn test_server_action_from_matches_stop() {
+            let args = vec!["embed-tool", "server", "stop"];
+            let cli = Cli::try_parse_from(args).unwrap();
+        
+            match cli.command {
+                Commands::Server { action: ServerAction::Stop } => {},
+                _ => panic!("Expected Server::Stop"),
+            }
+        }
+
+        #[test]
+        fn test_server_action_from_matches_status() {
+            let args = vec!["embed-tool", "server", "status"];
+            let cli = Cli::try_parse_from(args).unwrap();
+        
+            match cli.command {
+                Commands::Server { action: ServerAction::Status } => {},
+                _ => panic!("Expected Server::Status"),
+            }
+        }
+
+        #[test]
+        fn test_server_action_from_matches_restart() {
+            let args = vec!["embed-tool", "server", "restart", "--port", "8888"];
+            let cli = Cli::try_parse_from(args).unwrap();
+        
+            match cli.command {
+                Commands::Server { action: ServerAction::Restart(start_args) } => {
+                    assert_eq!(start_args.port, 8888);
+                }
+                _ => panic!("Expected Server::Restart"),
+            }
+        }
+
+        #[test]
+        fn test_start_args_with_tls() {
+            let args = vec![
+                "embed-tool", "server", "start",
+                "--tls-cert-path", "/path/to/cert.pem",
+                "--tls-key-path", "/path/to/key.pem",
+            ];
+            let cli = Cli::try_parse_from(args).unwrap();
+        
+            match cli.command {
+                Commands::Server { action: ServerAction::Start(start_args) } => {
+                    assert_eq!(start_args.tls_cert_path, Some("/path/to/cert.pem".to_string()));
+                    assert_eq!(start_args.tls_key_path, Some("/path/to/key.pem".to_string()));
+                }
+                _ => panic!("Expected Server::Start"),
+            }
+        }
+
+        #[test]
+        fn test_validate_models_edge_cases() {
+            // Additional edge cases
+            assert!(validate_models("a").is_ok());
+            assert!(validate_models("model-name").is_ok());
+            assert!(validate_models("model_name").is_ok());
+            assert!(validate_models("  ,  ,  ").is_err());
+            assert!(validate_models(",").is_err());
+        }
+
+        #[test]
+        fn test_validate_model_name_edge_cases() {
+            assert!(validate_model_name("model").is_ok());
+            assert!(validate_model_name("  model  ").is_ok());
+            assert!(validate_model_name("model-123").is_ok());
+            assert!(validate_model_name("").is_err());
+            assert!(validate_model_name("   ").is_err());
+            assert!(validate_model_name("\t\n").is_err());
+        }
+
+        #[test]
+        fn test_cli_verbose_flag() {
+            let args = vec!["embed-tool", "--verbose", "server", "status"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.verbose);
+        }
+
+        #[test]
+        fn test_cli_config_path() {
+            let args = vec!["embed-tool", "--config", "/path/to/config.toml", "server", "status"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert_eq!(cli.config, Some(PathBuf::from("/path/to/config.toml")));
+        }
+
+        #[test]
+        fn test_model_actions() {
+            // Test Model::List
+            let args = vec!["embed-tool", "model", "list"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Model { action: ModelAction::List } => {},
+                _ => panic!("Expected Model::List"),
+            }
+
+            // Test Model::Download
+            let args = vec!["embed-tool", "model", "download", "model-name", "--alias", "my-model", "--force"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Model { action: ModelAction::Download(args) } => {
+                    assert_eq!(args.model_name, "model-name");
+                    assert_eq!(args.alias, Some("my-model".to_string()));
+                    assert!(args.force);
+                }
+                _ => panic!("Expected Model::Download"),
+            }
+
+            // Test Model::Remove
+            let args = vec!["embed-tool", "model", "remove", "model-name", "--yes"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Model { action: ModelAction::Remove(args) } => {
+                    assert_eq!(args.model_name, "model-name");
+                    assert!(args.yes);
+                }
+                _ => panic!("Expected Model::Remove"),
+            }
+
+            // Test Model::Update
+            let args = vec!["embed-tool", "model", "update", "model-name"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Model { action: ModelAction::Update(args) } => {
+                    assert_eq!(args.model_name, "model-name");
+                }
+                _ => panic!("Expected Model::Update"),
+            }
+
+            // Test Model::Info
+            let args = vec!["embed-tool", "model", "info", "model-name"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Model { action: ModelAction::Info(args) } => {
+                    assert_eq!(args.model_name, "model-name");
+                }
+                _ => panic!("Expected Model::Info"),
+            }
+        }
+
+        #[test]
+        fn test_config_actions() {
+            // Test Config::Get
+            let args = vec!["embed-tool", "config", "get"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Config { action: ConfigAction::Get } => {},
+                _ => panic!("Expected Config::Get"),
+            }
+
+            // Test Config::Set
+            let args = vec!["embed-tool", "config", "set", "server.port", "9000"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Config { action: ConfigAction::Set(args) } => {
+                    assert_eq!(args.key, "server.port");
+                    assert_eq!(args.value, "9000");
+                }
+                _ => panic!("Expected Config::Set"),
+            }
+
+            // Test Config::Reset
+            let args = vec!["embed-tool", "config", "reset"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Config { action: ConfigAction::Reset } => {},
+                _ => panic!("Expected Config::Reset"),
+            }
+
+            // Test Config::Path
+            let args = vec!["embed-tool", "config", "path"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Config { action: ConfigAction::Path } => {},
+                _ => panic!("Expected Config::Path"),
+            }
+        }
+
+        #[test]
+        fn test_embed_with_model() {
+            let args = vec!["embed-tool", "embed", "test text", "--model", "custom-model", "--format", "csv"];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Embed(args) => {
+                    assert_eq!(args.text, "test text");
+                    assert_eq!(args.model, Some("custom-model".to_string()));
+                    assert_eq!(args.format, "csv");
+                }
+                _ => panic!("Expected Embed"),
+            }
+        }
+
+        #[test]
+        fn test_batch_with_options() {
+            let args = vec![
+                "embed-tool", "batch", "/input.json",
+                "--output", "/output.json",
+                "--model", "my-model",
+                "--format", "npy",
+            ];
+            let cli = Cli::try_parse_from(args).unwrap();
+            match cli.command {
+                Commands::Batch(args) => {
+                    assert_eq!(args.input, PathBuf::from("/input.json"));
+                    assert_eq!(args.output, Some(PathBuf::from("/output.json")));
+                    assert_eq!(args.model, Some("my-model".to_string()));
+                    assert_eq!(args.format, "npy");
+                }
+                _ => panic!("Expected Batch"),
+            }
+        }
 }
