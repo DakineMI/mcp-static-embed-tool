@@ -112,18 +112,18 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
 - **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
-- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
-- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
-- **Unresolved import `governor::state::keyed::NotKeyed`**: Update the import to `governor::state::NotKeyed`.
-- **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
-- **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
-- **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
+- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn StdError>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 - **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
 - **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
 - **`E0614: type `std::option::Option<&mut HeaderMap>` cannot be dereferenced`**: In `src/server/limit.rs`, the line `*req.headers_mut() = headers;` is causing a compilation error because `req.headers_mut()` returns an `Option<&mut HeaderMap>`, and you cannot directly dereference and assign to it.
 - **Invalid VS Code terminal profile color setting**: The terminal profile color setting in VS Code's `settings.json` only accepts predefined ANSI color names, not arbitrary hex codes. To fix this, replace the invalid hex color with the closest matching ANSI color name.
 - **Invalid VS Code terminal profile icon value**: The VS Code terminal profile setting only accepts predefined icon names. To fix this, change it to a valid icon from the allowed list, such as "terminal" (a generic terminal icon).
+- **Unresolved import `governor::state::DirectState`**: This is due to changes in the `governor` crate. Update the import to `governor::state::direct::DirectStateStore` or `governor::state::keyed::NotKeyed` as appropriate. In some versions, `DirectState` may have been renamed to `DirectStateStore`, so adjust the import and type references accordingly. **Resolution**: Update the import to `governor::state::direct::DirectStateStore` or `governor::state::NotKeyed` as appropriate, and replace all occurrences of `DirectState` with `DirectStateStore` if necessary.
+- **Unresolved import `governor::state::keyed::NotKeyed`**: Update the import to `governor::state::NotKeyed`.
+- **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
+- **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
+- **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
 
 **Key Log Messages**:
 
@@ -187,8 +187,8 @@ The project is now in a functional state for basic HTTP API and CLI operations. 
 - **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
-- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn std::error::Error>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err(|e| anyhow::anyhow!(e))`.
+- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn StdError>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 - **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
 - **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
@@ -223,7 +223,7 @@ When documenting these aspects:
 
 - Be concise and actionable (20-50 lines).
 - Include specific examples from the codebase.
-- Avoid generic advice and focus on THIS project's specific approaches.
+- Avoid generic advice ("write tests", "handle errors") - focus on THIS project's specific approaches.
 - Document only discoverable patterns, not aspirational practices.
 - Reference key files/directories that exemplify important patterns.
 - Use detailed todos to track all work. They should be specific and broken down in reasonable, completable, simple tasks.
@@ -242,7 +242,6 @@ The AI coding assistant must add a large number of tests, so go through and quic
 The AI coding assistant does not need to run tarpaulin after every test it adds. You **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
 
 The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands. The AI coding assistant **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
-
 The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands.
 
 **All requirements must be met:**
@@ -250,3 +249,42 @@ The AI coding assistant **MUST** wait for commands issued to complete, then read
 - Every method of every file **MUST** have a test
 - **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. 
 - The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands
+- Code coverage, quality, maintainability, documentation, and readability are all expected to be at or above minimum professional thresholds.
+
+Going forward, use `fd` for file discovery and navigation.
+
+Here are handy fd equivalents you can reuse:
+- List all files under src/server
+  - fd . src/server -t f
+- List all Rust files anywhere under src
+  - fd -e rs . src
+- Match by full path (when the pattern includes slashes)
+  - fd --full-path 'src/server' -t f
+- Find test files
+  - fd -e rs 'test' src
+- List only directories (e.g., modules)
+  - fd . src/server -t d
+
+Note: fd’s syntax is fd [pattern] [path]. If your pattern contains a slash, use --full-path, or use a match-all pattern (.) and provide the directory as the path.
+
+It is expected you will write good error free accurate tests the first time without needing to run tests after each one or file. 
+
+The AI coding assistant does not need to run tarpaulin after every test it adds. The AI coding assistant **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
+The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands
+
+When the AI coding assistant generates test cases, it must follow these steps:
+
+1.  Confirm the test case compiles successfully.
+2.  Run the test case to confirm successful execution.
+3.  After generating tests for each file in the codebase, the AI will estimate whether the overall test coverage has exceeded 95%.
+4.  The AI coding assistant **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
+
+If the AI coding assistant is unable to automatically test the cases, it will:
+
+*   Describe the proposed test case and ask for guidance.
+*   Provide the rationale behind the test case.
+*   Explain how to manually run the test and verify the results.
+
+Remember to use fd for file navigation and rg for searching.
+
+When we run the application or tests, we can not generate garbage test artifacts without cleaning it up.

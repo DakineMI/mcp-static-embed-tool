@@ -1,42 +1,99 @@
+//! Application-level error types for the embedding server.
+//!
+//! This module defines a structured error type hierarchy using `thiserror`
+//! for consistent error handling across the server.
+//!
+//! ## Error Categories
+//!
+//! - **Model Errors**: Model loading and operation failures
+//! - **Authentication Errors**: API key validation and authentication
+//! - **Request Errors**: Invalid input or unsupported operations
+//! - **Server Errors**: Database, TLS, and startup failures
+//! - **Rate Limiting**: Request throttling errors
+//!
+//! ## Error Types
+//!
+//! Each error variant maps to an OpenAI-compatible error type (e.g.,
+//! "invalid_request_error", "authentication_error") for API consistency.
+//!
+//! ## Examples
+//!
+//! ```
+//! use static_embedding_server::server::errors::AppError;
+//!
+//! // Model loading error
+//! let err = AppError::ModelLoad("potion-32M".to_string(), "file not found".to_string());
+//! assert_eq!(err.error_type(), "model_load_error");
+//!
+//! // Authentication error
+//! let err = AppError::AuthFailed;
+//! assert_eq!(err.error_type(), "authentication_error");
+//! ```
+
 use thiserror::Error;
 
+/// Application-level errors with structured error types.
 #[derive(Error, Debug)]
 pub enum AppError {
+    /// Model failed to load from disk or remote source.
     #[error("Failed to load model '{0}': {1}")]
     ModelLoad(String, String),
 
+    /// No models were successfully loaded on server startup.
     #[error("No models available")]
     NoModelsAvailable,
 
+    /// API key authentication failed.
     #[error("Authentication failed")]
     AuthFailed,
 
+    /// API key does not match expected format.
     #[error("Invalid API key format")]
     InvalidApiKeyFormat,
 
+    /// API key not found in database.
     #[error("API key not found")]
     ApiKeyNotFound,
 
+    /// Failed to revoke API key.
     #[error("API key revocation failed for key '{0}'")]
     ApiKeyRevocationFailed(String),
 
+    /// Request contains invalid input data.
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    /// API key exceeded rate limit.
     #[error("Rate limit exceeded for API key '{0}'")]
     RateLimitExceeded(String),
 
+    /// Database operation failed.
     #[error("Database error: {0}")]
     DatabaseError(String),
 
+    /// TLS certificate/key loading or configuration failed.
     #[error("TLS configuration error: {0}")]
     TlsConfigError(String),
 
+    /// Server failed to start due to port conflict or other issue.
     #[error("Server startup error: {0}")]
     StartupError(String),
 }
 
 impl AppError {
+    /// Get the OpenAI-compatible error type string.
+    ///
+    /// # Returns
+    ///
+    /// Static string representing the error category for API responses
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use static_embedding_server::server::errors::AppError;
+    /// let err = AppError::InvalidInput("empty text".to_string());
+    /// assert_eq!(err.error_type(), "invalid_request_error");
+    /// ```
     pub fn error_type(&self) -> &'static str {
         match self {
             AppError::ModelLoad(_, _) => "model_load_error",

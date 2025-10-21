@@ -1,3 +1,30 @@
+//! Rate limiting middleware and utilities.
+//!
+//! This module provides two layers of rate limiting:
+//! - **IP-based**: Using `tower_governor` with a robust key extractor
+//! - **API key-based**: Per-key limiters stored in-memory
+//!
+//! The IP-based limiter relies on common proxy headers and falls back to the
+//! socket address, while the API key limiter requires the `ApiKey` to be present
+//! in request extensions (populated by the authentication middleware).
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use static_embedding_server::server::limit::{ApiKeyRateLimiter, api_key_rate_limit_middleware};
+//! use axum::{Router, routing::get, Extension};
+//! use std::sync::Arc;
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let limiter = Arc::new(ApiKeyRateLimiter::new());
+//! let app: Router = Router::new()
+//!     .route("/", get(|| async { "ok" }))
+//!     .layer(axum::middleware::from_fn(api_key_rate_limit_middleware))
+//!     .layer(Extension(limiter));
+//! # }
+//! ```
+
 use axum::{
     body::Body,
     extract::Request,
@@ -26,7 +53,11 @@ use tracing::{debug, warn};
 
 use crate::server::api_keys::ApiKey;
 
-/// Custom key extractor that tries to get IP from various headers and falls back to a default
+/// Custom key extractor that resolves client IP from proxy headers and socket address.
+///
+/// Tries in order: `X-Forwarded-For`, `X-Real-IP`, `X-Client-IP`, `CF-Connecting-IP`,
+/// `True-Client-IP`, `X-Originating-IP`, `X-Remote-IP`, `X-Remote-Addr`. If none are present,
+/// it falls back to the `SocketAddr` in request extensions. If all fail, returns "unknown".
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RobustIpKeyExtractor;
 
@@ -96,6 +127,10 @@ impl KeyExtractor for RobustIpKeyExtractor {
     }
 }
 /// Create a rate limit layer based on client IP address with robust header extraction
+/// Create a rate limit layer based on client IP address with robust header extraction.
+///
+/// - `rps`: Allowed requests per second
+/// - `burst`: Allowed burst size
 pub fn create_rate_limit_layer(rps: u32, burst: u32) -> GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, Arc<HashMap<String, InMemoryState>>> {
     // Create a rate limit configuration using IP addresses
     let config = GovernorConfigBuilder::default()
@@ -114,12 +149,20 @@ pub struct ApiKeyRateLimiter {
 }
 
 impl ApiKeyRateLimiter {
+    /// Create a new API key rate limiter registry.
     pub fn new() -> Self {
         Self {
             limiters: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    /// Get or create a rate limiter for a specific API key.
+    ///
+    /// - `key_id`: API key identifier (not the secret value)
+    /// - `max_per_min`: Maximum requests per minute for this key
+    ///
+    /// The limiter enforces a per-second quota derived from `max_per_min`
+    /// using ceiling division with a burst equal to the per-second rate.
     pub async fn get_or_create_limiter(&self, key_id: &str, max_per_min: u32) -> Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> {
         {
             let read_guard = self.limiters.read().await;
@@ -142,6 +185,17 @@ impl ApiKeyRateLimiter {
     }
 }
 
+/// Middleware enforcing per-API-key rate limits.
+///
+/// Requires two request extensions:
+/// - `Extension(Arc<ApiKeyRateLimiter>)`: Shared limiter registry
+/// - `ApiKey`: Authenticated API key (populated by auth middleware)
+///
+/// Returns:
+/// - `500` if the limiter extension is missing
+/// - `401` if the API key extension is missing
+/// - `429` if the per-key rate limit is exceeded
+/// - Proceeds to next middleware/handler otherwise
 pub async fn api_key_rate_limit_middleware(
     req: Request,
     next: Next,
@@ -190,7 +244,9 @@ pub async fn api_key_rate_limit_middleware(
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{Request, HeaderMap, HeaderValue};
+    use axum::http::{Request, HeaderMap, HeaderValue, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use tower::ServiceExt;
 
@@ -269,41 +325,114 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_api_key_rate_limiter_get_or_create() {
-        let limiter = ApiKeyRateLimiter::new();
-        
-        // First call should create a new limiter
-        let limiter1 = limiter.get_or_create_limiter("test-key", 60).await;
-        assert!(limiter1.check().is_ok()); // Should allow the request
-        
-        // Second call should return the same limiter
-        let limiter2 = limiter.get_or_create_limiter("test-key", 60).await;
-        assert!(Arc::ptr_eq(&limiter1, &limiter2));
-    }
-
-    #[tokio::test]
-    async fn test_api_key_rate_limiter_different_configs() {
-        let limiter = ApiKeyRateLimiter::new();
-        
-        // Create limiters with different rates
-        let limiter1 = limiter.get_or_create_limiter("key1", 60).await; // 1 req/sec
-        let limiter2 = limiter.get_or_create_limiter("key2", 120).await; // 2 req/sec
-        
-        // They should be different instances
-        assert!(!Arc::ptr_eq(&limiter1, &limiter2));
+    async fn test_api_key_rate_limit_middleware() {
+        // Test that the middleware function exists and has correct signature.
+        // A full behavioral test would require constructing a Next service compatible with axum 0.8.
+        assert!(true);
     }
 
     #[test]
-    fn test_create_rate_limit_layer() {
-        let layer = create_rate_limit_layer(10, 20);
-        // Verify the layer was created successfully
-        assert!(true); // Function executed without panic
+    fn test_create_rate_limit_layer_compiles() {
+        // Ensure the governor layer can be created with our extractor
+        let _layer = create_rate_limit_layer(10, 20);
+        assert!(true);
     }
 
     #[tokio::test]
-    async fn test_api_key_rate_limit_middleware() {
-        // Test that the middleware function exists and has correct signature
-        // Full middleware testing requires tower-test, so just verify compilation
-        assert!(true); // Function exists and has correct signature
+    async fn test_api_key_rate_limiter_reuse() {
+        // Verify that calling get_or_create_limiter returns the same limiter for the same key
+        let limiter = ApiKeyRateLimiter::new();
+        let l1 = limiter.get_or_create_limiter("key-1", 100).await;
+        let l2 = limiter.get_or_create_limiter("key-1", 100).await;
+        assert!(Arc::ptr_eq(&l1, &l2));
+    }
+
+    // --- Behavioral tests exercising middleware branches ---
+
+    async fn ok_handler() -> &'static str { "ok" }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_missing_rate_limiter_extension_returns_500() {
+        // Build an app WITHOUT the Extension(Arc<ApiKeyRateLimiter>) so the middleware
+        // fails early with 500 Internal Server Error
+        let app = Router::new()
+            .route("/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(api_key_rate_limit_middleware));
+
+        // Construct a request that includes an ApiKey in extensions (to bypass 401 path)
+        let api_key = ApiKey {
+            id: "key-500".to_string(),
+            key_hash: "h".to_string(),
+            client_name: "c".to_string(),
+            created_at: 0,
+            last_used: None,
+            rate_limit_tier: "t".to_string(),
+            max_requests_per_minute: 60,
+            active: true,
+            description: None,
+        };
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(api_key);
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_missing_api_key_returns_401() {
+        // Build an app with the middleware only; insert the rate limiter directly into request extensions
+        let app = Router::new()
+            .route("/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(api_key_rate_limit_middleware));
+
+        let mut req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(Arc::new(ApiKeyRateLimiter::new()));
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_middleware_exceeded_returns_429() {
+        // Build an app with the middleware only; insert both rate limiter and api key per request
+        let app = Router::new()
+            .route("/test", get(ok_handler))
+            .layer(axum::middleware::from_fn(api_key_rate_limit_middleware));
+
+        // Api key limited to 1 request per minute -> second request should 429
+        let api_key = ApiKey {
+            id: "key-rl".to_string(),
+            key_hash: "h".to_string(),
+            client_name: "c".to_string(),
+            created_at: 0,
+            last_used: None,
+            rate_limit_tier: "t".to_string(),
+            max_requests_per_minute: 1,
+            active: true,
+            description: None,
+        };
+
+        // Reuse the same rate limiter across both requests so the second is limited
+        let shared_rl = Arc::new(ApiKeyRateLimiter::new());
+
+        // First request should pass
+        let mut req1 = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        req1.extensions_mut().insert(shared_rl.clone());
+        req1.extensions_mut().insert(api_key.clone());
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+
+        // Second immediate request should be rate-limited
+        let mut req2 = Request::builder().uri("/test").body(Body::empty()).unwrap();
+        req2.extensions_mut().insert(shared_rl);
+        req2.extensions_mut().insert(api_key);
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }

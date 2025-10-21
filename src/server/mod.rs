@@ -1,3 +1,47 @@
+//! Server module providing HTTP API and MCP integration for embedding services.
+//!
+//! This module implements a production-ready embedding server with:
+//! - **OpenAI-compatible API**: `/v1/embeddings` endpoint matching OpenAI's format
+//! - **Multi-model support**: Concurrent loading and serving of multiple embedding models
+//! - **Authentication**: API key-based authentication with registration and management
+//! - **Rate limiting**: IP-based rate limiting with configurable RPS and burst
+//! - **MCP integration**: Model Context Protocol support for tool/resource serving
+//!
+//! # Architecture
+//!
+//! - `api` - HTTP API handlers and routing
+//! - `api_keys` - API key management and validation
+//! - `state` - Application state with model registry
+//! - `start` - Server startup and lifecycle management
+//! - `http` - HTTP server configuration and health checks
+//! - `errors` - Error types and handling
+//! - `limit` - Rate limiting middleware
+//!
+//! # Example
+//!
+//! ```no_run
+//! use static_embedding_server::server::start::start_server;
+//! use static_embedding_server::server::start::ServerConfig;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = ServerConfig {
+//!         server_url: "http://0.0.0.0:8080".to_string(),
+//!         bind_address: Some("0.0.0.0:8080".to_string()),
+//!         socket_path: None,
+//!         auth_disabled: false,
+//!         registration_enabled: true,
+//!         rate_limit_rps: 100,
+//!         rate_limit_burst: 200,
+//!         api_key_db_path: "./data/api_keys.db".to_string(),
+//!         tls_cert_path: None,
+//!         tls_key_path: None,
+//!         enable_mcp: false,
+//!     };
+//!     
+//!     start_server(config).await
+//! }
+//! ```
 pub mod api;
 pub mod api_keys;
 pub mod errors;
@@ -209,6 +253,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_embeddings_handler_empty_input() {
+        let state = create_test_app_state();
+        let request = EmbeddingRequest {
+            input: vec![],
+            model: None,
+        };
+
+        let params = QueryParams { model: None };
+
+        let result =
+            embeddings_handler(axum::extract::State(state), Query(params), Json(request)).await;
+
+        let ResponseJson(response) = result;
+        assert_eq!(response.data.len(), 0);
+        assert_eq!(response.usage.prompt_tokens, 0);
+        assert_eq!(response.usage.total_tokens, 0);
+    }
+
+    #[tokio::test]
     async fn test_embeddings_handler_fallback_to_default_model() {
         let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
         models.insert(
@@ -305,6 +368,48 @@ mod tests {
         assert_eq!(data.embedding, vec![1.0, 2.0, 3.0]);
         assert_eq!(data.index, 5);
     }
+
+    #[tokio::test]
+    async fn test_spawn_test_server_health() {
+        use super::test_utils::spawn_test_server;
+        use reqwest::Client;
+
+        let (addr, handle) = spawn_test_server(false).await;
+
+        let client = Client::new();
+        let resp = client.get(format!("{}/health", addr)).send().await.unwrap();
+        assert!(resp.status().is_success());
+
+        // stop server
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_spawn_test_server_embeddings_endpoint() {
+        use super::test_utils::spawn_test_server;
+        use reqwest::Client;
+        use serde_json::json;
+
+        let (addr, handle) = spawn_test_server(false).await;
+
+        let client = Client::new();
+        let url = format!("{}/v1/embeddings", addr);
+        let payload = json!({
+            "input": ["hello"],
+            "model": "potion-32M"
+        });
+
+        let resp = client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        // stop server
+        handle.abort();
+    }
 }
 
 #[cfg(test)]
@@ -330,10 +435,11 @@ pub mod test_utils {
         let addr = listener.local_addr().expect("Failed to get local addr");
         let addr_str = format!("http://{}", addr);
 
-        // Use system temp directory for test databases
-        let temp_dir = std::env::temp_dir();
-        let api_key_db_path =
-            temp_dir.join(format!("embed_tool_test_api_keys_{}.db", Uuid::new_v4()));
+        // Use a unique secure temp directory for test databases
+        let tmp = tempfile::tempdir().expect("failed to create tempdir");
+        let api_key_db_path = tmp
+            .path()
+            .join(format!("embed_tool_test_api_keys_{}.db", Uuid::new_v4()));
         let api_key_db_path = api_key_db_path.to_str().unwrap().to_string();
 
         let api_key_manager =

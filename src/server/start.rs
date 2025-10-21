@@ -1,3 +1,57 @@
+//! Server startup and lifecycle management.
+//!
+//! This module handles the complete server lifecycle including:
+//! - **Configuration**: Loading and validating server configuration
+//! - **Model loading**: Concurrent loading of embedding models with fallbacks
+//! - **Network binding**: TCP, Unix socket, and TLS support
+//! - **Graceful shutdown**: Signal handling (SIGTERM, SIGINT) with cleanup
+//! - **Metrics**: Server uptime and request tracking
+//!
+//! # Server Types
+//!
+//! The server supports multiple binding modes:
+//! - **HTTP**: Standard TCP binding with optional TLS
+//! - **Unix Socket**: For local IPC communication
+//! - **MCP (stdio)**: Model Context Protocol over stdio for tool integration
+//!
+//! # Configuration
+//!
+//! Server behavior is controlled via [`ServerConfig`]:
+//! - `server_url`: Base URL for the server
+//! - `bind_address`: TCP address (e.g., "0.0.0.0:8080")
+//! - `socket_path`: Unix socket path (optional)
+//! - `auth_disabled`: Disable API key authentication
+//! - `registration_enabled`: Allow new API key registration
+//! - `rate_limit_rps`: Requests per second limit
+//! - `rate_limit_burst`: Burst capacity for rate limiting
+//! - `api_key_db_path`: Path to API key database
+//! - `tls_cert_path`: TLS certificate file (optional)
+//! - `tls_key_path`: TLS private key file (optional)
+//! - `enable_mcp`: Enable MCP protocol support
+//!
+//! # Example
+//!
+//! ```no_run
+//! use static_embedding_server::server::start::{start_server, ServerConfig};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let config = ServerConfig {
+//!         server_url: "http://localhost:8080".to_string(),
+//!         bind_address: Some("127.0.0.1:8080".to_string()),
+//!         socket_path: None,
+//!         auth_disabled: false,
+//!         registration_enabled: true,
+//!         rate_limit_rps: 100,
+//!         rate_limit_burst: 200,
+//!         api_key_db_path: "./data/api_keys.db".to_string(),
+//!         tls_cert_path: None,
+//!         tls_key_path: None,
+//!         enable_mcp: false,
+//!     };
+//!     start_server(config).await
+//! }
+//! ```
 use crate::server::errors::AppError;
 use axum::{Router, routing::get, serve::Serve};
 use metrics::{counter, gauge};
@@ -32,19 +86,83 @@ use crate::tools::EmbeddingService;
 use crate::utils::{format_duration, generate_connection_id};
 use anyhow::{Result as AnyhowResult, anyhow};
 
-/// Configuration for server startup
+/// Configuration for server startup and behavior.
+///
+/// This structure contains all settings needed to start and configure the
+/// embedding server across different modes (HTTP, Unix socket, stdio).
+///
+/// # Fields
+///
+/// - `server_url`: Base URL for the server (e.g., "http://localhost:8080")
+/// - `bind_address`: TCP address to bind (e.g., "0.0.0.0:8080"). Mutually exclusive with `socket_path`.
+/// - `socket_path`: Unix socket path (e.g., "/tmp/embed.sock"). Mutually exclusive with `bind_address`.
+/// - `auth_disabled`: If true, disables API key authentication (insecure, dev only)
+/// - `registration_enabled`: If true, allows self-service API key registration
+/// - `rate_limit_rps`: Maximum requests per second per API key
+/// - `rate_limit_burst`: Burst capacity for rate limiting
+/// - `api_key_db_path`: Path to sled database for API key storage
+/// - `tls_cert_path`: Optional path to TLS certificate (PEM format)
+/// - `tls_key_path`: Optional path to TLS private key (PKCS8 format)
+/// - `enable_mcp`: Enable Model Context Protocol support
+///
+/// # Examples
+///
+/// ```
+/// use static_embedding_server::server::start::ServerConfig;
+///
+/// // HTTP server with TLS and authentication
+/// let config = ServerConfig {
+///     server_url: "https://api.example.com".to_string(),
+///     bind_address: Some("0.0.0.0:443".to_string()),
+///     socket_path: None,
+///     auth_disabled: false,
+///     registration_enabled: true,
+///     rate_limit_rps: 100,
+///     rate_limit_burst: 200,
+///     api_key_db_path: "/var/lib/embed/keys.db".to_string(),
+///     tls_cert_path: Some("/etc/ssl/certs/server.pem".to_string()),
+///     tls_key_path: Some("/etc/ssl/private/server.key".to_string()),
+///     enable_mcp: false,
+/// };
+///
+/// // Unix socket for local IPC
+/// let config = ServerConfig {
+///     server_url: "unix:///tmp/embed.sock".to_string(),
+///     bind_address: None,
+///     socket_path: Some("/tmp/embed.sock".to_string()),
+///     auth_disabled: true,
+///     registration_enabled: false,
+///     rate_limit_rps: 1000,
+///     rate_limit_burst: 2000,
+///     api_key_db_path: "/tmp/keys.db".to_string(),
+///     tls_cert_path: None,
+///     tls_key_path: None,
+///     enable_mcp: false,
+/// };
+/// ```
 #[derive(Clone)]
 pub struct ServerConfig {
+    /// Base URL for the server
     pub server_url: String,
+    /// TCP address to bind (e.g., "0.0.0.0:8080")
     pub bind_address: Option<String>,
+    /// Unix socket path (e.g., "/tmp/embed.sock")
     pub socket_path: Option<String>,
+    /// Disable API key authentication (insecure)
     pub auth_disabled: bool,
+    /// Allow self-service API key registration
     pub registration_enabled: bool,
+    /// Maximum requests per second per API key
     pub rate_limit_rps: u32,
+    /// Burst capacity for rate limiting
     pub rate_limit_burst: u32,
+    /// Path to API key database
     pub api_key_db_path: String,
+    /// Optional TLS certificate path
     pub tls_cert_path: Option<String>,
+    /// Optional TLS private key path
     pub tls_key_path: Option<String>,
+    /// Enable MCP protocol support
     pub enable_mcp: bool,
 }
 
@@ -52,7 +170,21 @@ pub struct ServerConfig {
 static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
-/// Handle double ctrl-c shutdown with force quit
+    /// Handle graceful shutdown with double Ctrl+C force quit.
+    ///
+    /// Monitors for Ctrl+C signals and implements a safety mechanism:
+    /// - **First Ctrl+C**: Initiates graceful shutdown
+    /// - **Second Ctrl+C** (within 2 seconds): Force quits immediately
+    /// - **Timeout**: Resets counter after 2 seconds of no signals
+    ///
+    /// This prevents accidental force quits while allowing escape from hanging shutdowns.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// tokio::spawn(handle_double_ctrl_c());
+    /// // Server continues running...
+    /// ```
 async fn handle_double_ctrl_c() {
     let mut ctrl_c_count = 0;
     let mut interval = tokio::time::interval(Duration::from_secs(2));
@@ -79,7 +211,53 @@ async fn handle_double_ctrl_c() {
     }
 }
 
-/// Start the MCP server based on the provided configuration
+    /// Start the embedding server based on the provided configuration.
+    ///
+    /// This is the main entry point for server startup. It handles:
+    /// - Configuration validation and logging
+    /// - Mode detection (HTTP/Unix socket/stdio)
+    /// - Delegation to mode-specific startup functions
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Server configuration including network, auth, and model settings
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Server started successfully (runs until shutdown signal)
+    /// * `Err(anyhow::Error)` - Configuration error or startup failure
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Both `bind_address` and `socket_path` are specified (invalid configuration)
+    /// - Network binding fails (port in use, permission denied)
+    /// - TLS certificate loading fails
+    /// - No models can be loaded
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use static_embedding_server::server::start::{start_server, ServerConfig};
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// let config = ServerConfig {
+    ///     server_url: "http://localhost:8080".to_string(),
+    ///     bind_address: Some("127.0.0.1:8080".to_string()),
+    ///     socket_path: None,
+    ///     auth_disabled: false,
+    ///     registration_enabled: true,
+    ///     rate_limit_rps: 100,
+    ///     rate_limit_burst: 200,
+    ///     api_key_db_path: "./data/api_keys.db".to_string(),
+    ///     tls_cert_path: None,
+    ///     tls_key_path: None,
+    ///     enable_mcp: false,
+    /// };
+    /// start_server(config).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
 pub async fn start_server(config: ServerConfig) -> AnyhowResult<()> {
     // Output debugging information
     info!(
@@ -108,7 +286,35 @@ pub async fn start_server(config: ServerConfig) -> AnyhowResult<()> {
     }
 }
 
-// Helper function to create TLS acceptor
+    /// Create a TLS acceptor from certificate and key files.
+    ///
+    /// Loads PEM-formatted certificate and PKCS8 private key files and constructs
+    /// a `TlsAcceptor` for accepting secure connections.
+    ///
+    /// # Arguments
+    ///
+    /// * `cert_path` - Path to PEM certificate file
+    /// * `key_path` - Path to PKCS8 private key file
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(TlsAcceptor)` - Configured TLS acceptor
+    /// * `Err(anyhow::Error)` - File I/O or parsing error
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Certificate file cannot be read
+    /// - Private key file cannot be read
+    /// - Certificate parsing fails (invalid PEM format)
+    /// - Key parsing fails (invalid PKCS8 format)
+    /// - TLS configuration is invalid (cert/key mismatch)
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let acceptor = create_tls_acceptor("cert.pem", "key.pem").await?;
+    /// ```
 async fn create_tls_acceptor(cert_path: &str, key_path: &str) -> AnyhowResult<TlsAcceptor> {
     let cert_file = fs::read(cert_path)
         .await
@@ -136,7 +342,31 @@ async fn create_tls_acceptor(cert_path: &str, key_path: &str) -> AnyhowResult<Tl
 
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
-/// Start the MCP server in stdio mode
+
+/// Start the embedding server in stdio mode (MCP protocol).
+///
+/// **Note**: This mode is currently disabled due to pending MCP trait implementations.
+///
+/// When enabled, this mode will:
+/// - Read MCP requests from stdin
+/// - Write MCP responses to stdout
+/// - Use stderr for logging
+///
+/// # Arguments
+///
+/// * `_config` - Server configuration (unused in current implementation)
+///
+/// # Returns
+///
+/// Currently returns an error indicating MCP mode is disabled.
+///
+/// # Examples
+///
+/// ```ignore
+/// // MCP is currently disabled
+/// let result = start_stdio_server(config).await;
+/// assert!(result.is_err());
+/// ```
 async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
     // MCP is currently disabled due to trait implementation issues
     Err(anyhow!(
@@ -144,7 +374,17 @@ async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
     ))
 }
 
-/// Start the MCP server in Unix socket mode
+/// Start the embedding server in Unix socket mode.
+///
+/// Binds to a Unix domain socket at `ServerConfig.socket_path`, initializes logging,
+/// and handles each connection with an MCP service. Removes any pre-existing socket file
+/// at the path before binding.
+///
+/// # Arguments
+/// * `config` - Server configuration with `socket_path` set
+///
+/// # Errors
+/// Returns an error on socket bind failure, file I/O error, or connection accept errors.
 async fn start_unix_server(config: ServerConfig) -> AnyhowResult<()> {
     // Get the specified socket path
     let socket_path = config
@@ -240,7 +480,18 @@ async fn start_unix_server(config: ServerConfig) -> AnyhowResult<()> {
     }
 }
 
-/// Start the MCP server in HTTP mode
+/// Start the embedding server in HTTP mode.
+///
+/// Binds to the TCP `bind_address`, initializes the API key manager, loads models
+/// into `AppState`, builds the Axum router with auth and rate limiting, and serves
+/// the OpenAI-compatible API. TLS is currently not implemented and will log as disabled
+/// even if certificate paths are provided.
+///
+/// # Arguments
+/// * `config` - Server configuration
+///
+/// # Errors
+/// Returns an error on bind failure, API key DB setup failure, or model initialization failure.
 async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
     // Extract configuration values
     let ServerConfig {
@@ -509,6 +760,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_tls_acceptor_invalid_paths() {
+        // Use clearly invalid cert/key paths to trigger error paths
+        let result = create_tls_acceptor("/path/does/not/exist/cert.pem", "/path/does/not/exist/key.pem").await;
+        assert!(result.is_err());
+        let msg = result.err().unwrap().to_string();
+        assert!(msg.contains("Failed to read certificate file") || msg.contains("No such file") || msg.contains("failed"));
+    }
+
+    #[tokio::test]
     #[should_panic(expected = "socket_path must be provided for unix mode")]
     async fn test_start_unix_server_missing_socket_path() {
         let config = ServerConfig {
@@ -760,5 +1020,85 @@ mod tests {
         // We expect either Ok(()) if it shut down cleanly, or an error if it was cancelled
         // Either way, it means the server startup code was executed
         assert!(result.is_ok() || result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_start_http_server_creates_db_dir() {
+        use std::path::PathBuf;
+        let temp_dir = TempDir::new().unwrap();
+        let nested_dir = temp_dir.path().join("deep/nested/dir");
+        let db_path: PathBuf = nested_dir.join("test.db");
+        assert!(!nested_dir.exists());
+
+        let config = ServerConfig {
+            server_url: "test".to_string(),
+            bind_address: Some("127.0.0.1:0".to_string()),
+            socket_path: None,
+            auth_disabled: true,
+            registration_enabled: false,
+            rate_limit_rps: 10,
+            rate_limit_burst: 20,
+            api_key_db_path: db_path.to_string_lossy().to_string(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            enable_mcp: false,
+        };
+
+        let handle = tokio::spawn(start_http_server(config));
+
+        // Wait briefly for server to create directories and open DB
+        let mut tries = 0;
+        while tries < 50 && !nested_dir.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tries += 1;
+        }
+        assert!(nested_dir.exists(), "DB directory was not created in time");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_start_unix_server_removes_existing_socket() {
+        use std::os::unix::fs::FileTypeExt;
+        let tmp = TempDir::new().unwrap();
+        let sock_path = tmp.path().join("server.sock");
+
+        // Create a regular file at the socket path to simulate stale socket
+        tokio::fs::write(&sock_path, b"stale").await.unwrap();
+        assert!(sock_path.exists());
+
+        let config = ServerConfig {
+            server_url: "test".to_string(),
+            bind_address: None,
+            socket_path: Some(sock_path.to_string_lossy().to_string()),
+            auth_disabled: true,
+            registration_enabled: false,
+            rate_limit_rps: 10,
+            rate_limit_burst: 20,
+            api_key_db_path: tmp.path().join("keys.db").to_string_lossy().to_string(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            enable_mcp: false,
+        };
+
+        let handle = tokio::spawn(start_unix_server(config));
+
+        // Wait for the server to bind and create a Unix socket at the path
+        let mut tries = 0;
+        let mut is_socket = false;
+        while tries < 100 {
+            if let Ok(meta) = tokio::fs::symlink_metadata(&sock_path).await {
+                let ft = meta.file_type();
+                if ft.is_socket() {
+                    is_socket = true;
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tries += 1;
+        }
+        assert!(is_socket, "Expected path to be a Unix socket after server start");
+
+        handle.abort();
     }
 }

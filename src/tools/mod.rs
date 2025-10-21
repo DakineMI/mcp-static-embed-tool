@@ -1,3 +1,39 @@
+//! Model Context Protocol (MCP) tools for the embedding server.
+//!
+//! This module implements MCP tool endpoints that expose embedding functionality
+//! through the MCP interface alongside the HTTP API.
+//!
+//! ## Available Tools
+//!
+//! - **embed**: Generate embeddings for a single text input
+//! - **batch_embed**: Process multiple texts in parallel
+//! - **list_models**: Query available embedding models
+//! - **load_model**: Dynamically load a model into memory
+//!
+//! ## Connection Management
+//!
+//! Each MCP client session maintains:
+//! - Unique connection ID
+//! - Session start time
+//! - Request metrics (count, last access)
+//! - Lock-based state for thread safety
+//!
+//! ## Examples
+//!
+//! ```json
+//! // MCP tool request: embed
+//! {
+//!   "input": "Hello world",
+//!   "model": "potion-32M"
+//! }
+//!
+//! // MCP tool request: batch_embed
+//! {
+//!   "inputs": ["Hello", "World"],
+//!   "model": "potion-32M"
+//! }
+//! ```
+
 use rmcp::{
     ErrorData as McpError,
     // tool, tool_router,
@@ -12,6 +48,7 @@ use tracing::{debug, info};
 // Global metrics
 // static EMBEDDING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Parameters for the embed tool.
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EmbedParams {
     #[schemars(description = "Text input to generate embeddings for")]

@@ -1,21 +1,68 @@
+//! Model Context Protocol (MCP) resources for the embedding server.
+//!
+//! This module implements MCP resource endpoints that provide static and dynamic
+//! documentation, configuration, and metadata through the MCP interface.
+//!
+//! ## Resource Types
+//!
+//! - **Static**: Built-in documentation, schemas, and help text
+//! - **Dynamic**: Runtime configuration, model lists, metrics
+//! - **Template**: Parameterized content with variable substitution
+//!
+//! ## Available Resources
+//!
+//! - `docs://api` - OpenAI-compatible API documentation
+//! - `docs://mcp` - MCP interface documentation
+//! - `config://current` - Active server configuration
+//! - `models://list` - Available models with metadata
+//! - `metrics://server` - Server performance metrics
+//!
+//! ## Resource Provider Pattern
+//!
+//! Resources are implemented via the `ResourceProvider` trait which defines:
+//! - URI (unique identifier)
+//! - Name and description
+//! - MIME type
+//! - Content generation
+//!
+//! ## Examples
+//!
+//! ```json
+//! // MCP resource request
+//! {
+//!   "uri": "docs://api",
+//!   "format": "text/markdown"
+//! }
+//! ```
+
 use rmcp::model::{Annotated, RawResource, ReadResourceResult, Resource, ResourceContents};
 
-// Trait and provider-based resource registry (similar to prompts)
+/// Trait for MCP resource providers.
+///
+/// Implementors provide static or dynamic content accessible through the MCP
+/// resource system with defined URIs, metadata, and MIME types.
 pub trait ResourceProvider {
-    /// Get the resource URI
+    /// Get the resource URI (e.g., "docs://api").
     fn uri(&self) -> &'static str;
 
-    /// Get the resource name
+    /// Get the human-readable resource name.
     fn name(&self) -> &'static str;
 
-    /// Get the resource description
+    /// Get the resource description for discovery.
     fn description(&self) -> &'static str;
 
-    /// Get the resource MIME type
+    /// Get the resource MIME type (e.g., "text/markdown").
     fn mime_type(&self) -> &'static str;
 
-    /// Get the resource content
+    /// Generate the resource content.
+    ///
+    /// This may be static text or dynamically generated based on server state.
     fn content(&self) -> String;
+
+    /// Get additional resource metadata (optional).
+    fn metadata(&self) -> Option<serde_json::Value> {
+        None
+    }
 
     /// Get the resource metadata
     fn meta(&self) -> Resource {

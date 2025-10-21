@@ -1,3 +1,40 @@
+//! Model management operations for embedding models.
+//!
+//! This module implements the `model` subcommand which handles downloading, distilling,
+//! and managing Model2Vec embedding models.
+//!
+//! ## Features
+//!
+//! - **Model Registry**: Track installed models with metadata (source, dimensions, size)
+//! - **HuggingFace Integration**: Download pre-trained models from HuggingFace Hub
+//! - **Model Distillation**: Create custom models via external Python `model2vec` CLI
+//! - **Model Information**: Inspect model metadata and capabilities
+//!
+//! ## Model Sources
+//!
+//! - `huggingface`: Downloaded from HuggingFace model hub
+//! - `local`: Manually added models from local filesystem
+//! - `distilled`: Custom models created via distillation process
+//!
+//! ## Examples
+//!
+//! ```bash
+//! # List installed models
+//! embed-tool model list
+//!
+//! # Download from HuggingFace
+//! embed-tool model download sentence-transformers/all-MiniLM-L6-v2 --alias mini-lm
+//!
+//! # Distill a custom model
+//! embed-tool model distill sentence-transformers/all-MiniLM-L6-v2 my-model --dims 128
+//!
+//! # Show model information
+//! embed-tool model info potion-32M
+//!
+//! # Remove a model
+//! embed-tool model remove old-model --yes
+//! ```
+
 use crate::cli::{ModelAction, DownloadArgs, DistillArgs, RemoveArgs, UpdateArgs, InfoArgs};
 use anyhow::Result as AnyhowResult;
 use std::path::PathBuf;
@@ -6,11 +43,13 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use chrono;
 
+/// Model registry for tracking installed models.
 #[derive(Serialize, Deserialize)]
 struct ModelRegistry {
     models: HashMap<String, ModelInfo>,
 }
 
+/// Metadata for an installed model.
 #[derive(Serialize, Deserialize, Clone)]
 struct ModelInfo {
     name: String,
@@ -22,6 +61,22 @@ struct ModelInfo {
     description: Option<String>,
 }
 
+/// Handle model management commands.
+///
+/// Routes the model action to the appropriate handler for list, download, distill, etc.
+///
+/// # Arguments
+///
+/// * `action` - The model action to perform
+/// * `_config_path` - Optional configuration file path (currently unused)
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Model registry is corrupted
+/// - Distillation fails (Python tool errors)
+/// - Download fails (network/HuggingFace errors)
+/// - Model files are missing or invalid
 pub async fn handle_model_command(
     action: ModelAction,
     _config_path: Option<PathBuf>,

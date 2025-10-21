@@ -1,3 +1,51 @@
+//! API key management and authentication middleware.
+//!
+//! This module implements a complete API key authentication system with:
+//! - **Key generation**: Cryptographically secure random keys with SHA-256 hashing
+//! - **Storage**: Persistent storage in sled embedded database
+//! - **Validation**: Middleware for request authentication
+//! - **Management**: List, revoke, and admin endpoints
+//! - **Registration**: Self-service key generation (when enabled)
+//!
+//! # Security
+//!
+//! - Keys are hashed with SHA-256 before storage (plaintext never persisted)
+//! - Keys have format: `embed-{base64_encoded_random_bytes}`
+//! - Rate limiting is enforced per-key via middleware integration
+//!
+//! # API Key Format
+//!
+//! ```text
+//! embed-AbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGhIjKl
+//! ```
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use static_embedding_server::server::api_keys::{ApiKeyManager, ApiKeyRequest};
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let manager = ApiKeyManager::new("./api_keys.db")?;
+//!     
+//!     // Generate a new API key
+//!     let request = ApiKeyRequest {
+//!         client_name: "my-app".to_string(),
+//!         description: None,
+//!         email: None,
+//!     };
+//!     let response = manager.generate_api_key(request).await.map_err(|e| anyhow::anyhow!("{}", e))?;
+//!     println!("Your API key: {}", response.api_key);
+//!     
+//!     // Validate a key
+//!     if let Some(_api_key_info) = manager.validate_api_key(&response.api_key).await {
+//!         println!("API key is valid!");
+//!     }
+//!     
+//!     Ok(())
+//! }
+//! ```
+
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::{
@@ -520,16 +568,54 @@ mod tests {
 
     #[tokio::test]
     async fn test_api_key_auth_middleware_valid_key() {
-        // Test that the middleware function exists and has correct signature
-        // Full middleware testing requires tower-test, so just verify compilation
-        assert!(true); // Function exists and has correct signature
+        // Build a small app protected by the auth middleware
+        async fn ok_handler() -> &'static str { "ok" }
+        let (manager, _tmp) = test_manager();
+        let manager = Arc::new(manager);
+
+        // Generate a key to authorize
+        let resp = manager.generate_api_key(ApiKeyRequest{ client_name: "mw-valid".into(), description: None, email: None }).await.unwrap();
+
+        // Layer order matters: apply middleware first, then Extension so Extension is outermost
+        // and inserts the manager into request extensions before the middleware runs.
+        let app = axum::Router::new()
+            .route("/ok", axum::routing::get(ok_handler))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware))
+            .layer(axum::Extension(manager.clone()));
+
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .uri("/ok")
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {}", resp.api_key))
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::OK);
     }
 
     #[tokio::test]
     async fn test_api_key_auth_middleware_invalid_key() {
-        // Test that the middleware function exists and has correct signature
-        // Full middleware testing requires tower-test, so just verify compilation
-        assert!(true); // Function exists and has correct signature
+        async fn ok_handler() -> &'static str { "ok" }
+        let (manager, _tmp) = test_manager();
+        let manager = Arc::new(manager);
+
+        // Layer order matters: Extension must be applied outermost so the middleware can access it
+        let app = axum::Router::new()
+            .route("/ok", axum::routing::get(ok_handler))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware))
+            .layer(axum::Extension(manager.clone()));
+
+        // Invalid Authorization header
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .uri("/ok")
+            .header(axum::http::header::AUTHORIZATION, "Bearer not-a-real-key")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -565,6 +651,23 @@ mod tests {
             assert!(key.active);
             assert!(key.created_at > 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_api_key_auth_middleware_missing_manager_returns_500() {
+        async fn ok_handler() -> &'static str { "ok" }
+        let app = axum::Router::new()
+            .route("/ok", axum::routing::get(ok_handler))
+            .layer(axum::middleware::from_fn(api_key_auth_middleware));
+
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .uri("/ok")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), axum::http::StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

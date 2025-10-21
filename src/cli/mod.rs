@@ -1,3 +1,48 @@
+//! Command-line interface for the static embedding server.
+//!
+//! This module provides a hierarchical CLI using clap v4 with the following command structure:
+//!
+//! ```text
+//! embed-tool
+//!   ├── server (start|stop|status|restart) - Server lifecycle management
+//!   ├── model (list|download|distill|remove|update|info) - Model operations
+//!   ├── config (get|set|reset|path) - Configuration management
+//!   ├── embed <text> - Quick single-text embedding
+//!   └── batch <input> - Batch process embeddings from file
+//! ```
+//!
+//! ## Architecture
+//!
+//! The CLI is organized into three main layers:
+//!
+//! 1. **Command Definitions** (`cli/mod.rs`): Top-level command structure and argument parsing
+//! 2. **Action Handlers** (`cli/server.rs`, `cli/models.rs`, `cli/config.rs`): Business logic for each command
+//! 3. **Shared Utilities**: Common helpers for path resolution, validation, and output formatting
+//!
+//! ## Key Features
+//!
+//! - **Global Options**: `--config` and `--verbose` available across all commands
+//! - **Server Management**: Full lifecycle control with daemon mode support
+//! - **Model Operations**: Download, distill (via external Python tool), and manage embeddings models
+//! - **Quick Operations**: Single-command embedding for testing and scripting
+//! - **Batch Processing**: Efficient multi-input processing with configurable batch sizes
+//!
+//! ## Examples
+//!
+//! ```bash
+//! # Start server on custom port
+//! embed-tool server start --port 9090 --bind 127.0.0.1
+//!
+//! # Quick embed with specific model
+//! embed-tool embed "Hello world" --model custom-model --format json
+//!
+//! # Batch process from file
+//! embed-tool batch input.json --output embeddings.json --batch-size 64
+//!
+//! # Distill a new model
+//! embed-tool model distill sentence-transformers/all-MiniLM-L6-v2 my-model --dims 256
+//! ```
+
 use clap::{Parser, Subcommand, Args, Arg, ArgMatches, ArgAction, Command};
 use std::path::PathBuf;
 
@@ -117,14 +162,15 @@ impl ServerAction {
 #[derive(Clone, Debug, Args)]
 pub struct StartArgs {
     /// Port to bind the HTTP server
-    #[arg(long)]
+    #[arg(long, default_value_t = 8080)]
     pub port: u16,
     
     /// Bind address
-    #[arg(long)]
+    #[arg(long, default_value = "0.0.0.0")]
     pub bind: String,
     
     /// Unix socket path (mutually exclusive with bind)
+    #[arg(long = "socket-path", conflicts_with = "bind")]
     pub socket_path: Option<PathBuf>,
     
     /// Models to load (comma-separated)
@@ -148,12 +194,15 @@ pub struct StartArgs {
     pub daemon: bool,
     
     /// PID file location for daemon mode
+    #[arg(long = "pid-file")]
     pub pid_file: Option<PathBuf>,
     
     /// TLS certificate file path
+    #[arg(long = "tls-cert-path")]
     pub tls_cert_path: Option<String>,
 
     /// TLS private key file path
+    #[arg(long = "tls-key-path")]
     pub tls_key_path: Option<String>,
 }
 
@@ -686,8 +735,9 @@ mod tests {
     fn test_start_args_from_arg_matches() {
         use clap::Command;
         
-        let matches = Command::new("test")
-            .get_matches_from(vec!["test", "--port", "8080", "--bind", "127.0.0.1"]);
+        // Build a command that includes StartArgs arguments before parsing
+        let matches = StartArgs::augment_args(Command::new("start"))
+            .get_matches_from(vec!["start", "--port", "8080", "--bind", "127.0.0.1"]);
         let args = StartArgs::from_arg_matches(&matches).unwrap();
         assert_eq!(args.port, 8080);
         assert_eq!(args.bind, "127.0.0.1");

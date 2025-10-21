@@ -1,3 +1,43 @@
+//! Server lifecycle management commands.
+//!
+//! This module implements the `server` subcommand which provides full lifecycle control
+//! over the embedding server, including start, stop, status, and restart operations.
+//!
+//! ## Features
+//!
+//! - **HTTP Server**: Binds to TCP address with configurable port and host
+//! - **Unix Socket**: Alternative IPC communication for local connections
+//! - **Daemon Mode**: Background process with PID file management
+//! - **Single Instance**: PID file prevents multiple server instances
+//! - **Graceful Shutdown**: Proper cleanup on stop/restart
+//!
+//! ## Server Lifecycle
+//!
+//! ```text
+//! start → running → stop
+//!   ↓                ↑
+//!   └── restart ─────┘
+//! ```
+//!
+//! ## Examples
+//!
+//! ```bash
+//! # Start server with defaults (port 8080, bind 0.0.0.0)
+//! embed-tool server start
+//!
+//! # Start with custom configuration
+//! embed-tool server start --port 9090 --bind 127.0.0.1 --models model1,model2
+//!
+//! # Start as daemon with TLS
+//! embed-tool server start --daemon --tls-cert-path cert.pem --tls-key-path key.pem
+//!
+//! # Check server status
+//! embed-tool server status
+//!
+//! # Graceful restart
+//! embed-tool server restart
+//! ```
+
 use crate::cli::{ServerAction, StartArgs};
 use crate::server::start::{start_server, ServerConfig};
 use anyhow::{anyhow, Result as AnyhowResult};
@@ -6,6 +46,22 @@ use std::process::{Command, Stdio};
 use std::fs;
 use sysinfo::{System, Pid};
 
+/// Handle server lifecycle commands.
+///
+/// Routes the server action (start, stop, status, restart) to the appropriate handler.
+///
+/// # Arguments
+///
+/// * `action` - The server action to perform
+/// * `config_path` - Optional path to configuration file
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Server is already running when starting
+/// - Server is not running when stopping
+/// - Configuration is invalid
+/// - System resources are unavailable
 pub async fn handle_server_command(
     action: ServerAction,
     config_path: Option<PathBuf>,
@@ -139,9 +195,13 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     println!("Starting embedding server as daemon...");
     
     let current_exe = std::env::current_exe()?;
-    let pid_file = args.pid_file.clone().unwrap_or_else(|| {
-        std::env::temp_dir().join("embed-tool.pid")
-    });
+    let pid_file = args
+        .pid_file
+        .clone()
+        .unwrap_or_else(pid_file_path);
+    if let Some(parent) = pid_file.parent() {
+        fs::create_dir_all(parent)?;
+    }
     
     let port_str = args.port.to_string();
     let bind_str = args.bind.clone();
@@ -183,7 +243,7 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
 }
 
 async fn stop_server() -> AnyhowResult<()> {
-    let pid_file = std::env::temp_dir().join("embed-tool.pid");
+    let pid_file = pid_file_path();
     
     if !pid_file.exists() {
         // Try to find by port
@@ -207,7 +267,7 @@ async fn stop_server() -> AnyhowResult<()> {
 }
 
 async fn show_status() -> AnyhowResult<()> {
-    let pid_file = std::env::temp_dir().join("embed-tool.pid");
+    let pid_file = pid_file_path();
     
     if pid_file.exists() {
         let pid_str = fs::read_to_string(&pid_file)?;
@@ -236,7 +296,7 @@ async fn show_status() -> AnyhowResult<()> {
 }
 
 async fn is_server_running() -> AnyhowResult<bool> {
-    let pid_file = std::env::temp_dir().join("embed-tool.pid");
+    let pid_file = pid_file_path();
     
     if pid_file.exists() {
         let pid_str = fs::read_to_string(&pid_file)?;
@@ -255,9 +315,37 @@ async fn is_server_running() -> AnyhowResult<bool> {
 }
 
 fn is_process_running(pid: u32) -> bool {
-    let mut system = System::new();
-    system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, false, sysinfo::ProcessRefreshKind::new());
-    system.process(Pid::from(pid as usize)).is_some()
+    #[cfg(unix)]
+    {
+        // Use external `kill -0 <pid>` to probe for process existence without unsafe
+        match Command::new("kill").args(["-0", &pid.to_string()]).output() {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        // Fallback to sysinfo on Windows
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            false,
+            sysinfo::ProcessRefreshKind::new(),
+        );
+        system.process(Pid::from(pid as usize)).is_some()
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            false,
+            sysinfo::ProcessRefreshKind::new(),
+        );
+        system.process(Pid::from(pid as usize)).is_some()
+    }
 }
 
 async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
@@ -288,9 +376,10 @@ fn terminate_process(pid: u32) -> AnyhowResult<()> {
     
     #[cfg(unix)]
     {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
+        // Send TERM signal via external `kill` to avoid unsafe
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output()?;
     }
     
     #[cfg(windows)]
@@ -301,6 +390,53 @@ fn terminate_process(pid: u32) -> AnyhowResult<()> {
     }
     
     Ok(())
+}
+
+// Determine a stable, per-user PID file path
+fn pid_file_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        let base = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                // Fallback as a last resort
+                PathBuf::from("/tmp")
+            });
+        return base
+            .join("Library")
+            .join("Application Support")
+            .join("embed-tool")
+            .join("embed-tool.pid");
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let base = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        return base.join("embed-tool").join("embed-tool.pid");
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
+            return PathBuf::from(xdg).join("embed-tool").join("embed-tool.pid");
+        }
+        let base = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        return base.join(".cache").join("embed-tool").join("embed-tool.pid");
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        // Fallback to a subdirectory under temp dir for other platforms
+        return PathBuf::from("/tmp")
+            .join("embed-tool")
+            .join("embed-tool.pid");
+    }
 }
 
 #[cfg(test)]
@@ -385,7 +521,7 @@ mod tests {
     #[tokio::test]
     async fn test_is_server_running_no_pid_file() {
         // Remove any existing PID file
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         let _ = fs::remove_file(&pid_file);
 
         // Should return false when no PID file exists and no server is running on port 8080
@@ -397,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn test_show_status_no_server() {
         // Remove any existing PID file
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         let _ = fs::remove_file(&pid_file);
 
         // Should not panic
@@ -408,7 +544,7 @@ mod tests {
     #[tokio::test]
     async fn test_stop_server_no_pid_file() {
         // Remove any existing PID file
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         let _ = fs::remove_file(&pid_file);
 
         // Should not panic
@@ -470,7 +606,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_server_command_restart() {
         // Remove any existing PID file first
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         let _ = fs::remove_file(&pid_file);
         
         let args = StartArgs {
@@ -597,8 +733,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_foreground_socket_config() {
-        let temp_dir = std::env::temp_dir();
-        let socket_path = temp_dir.join("test_socket.sock");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let socket_path = temp_dir.path().join("test_socket.sock");
         
         let args = StartArgs {
             port: 8085,
@@ -659,8 +795,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_daemon_basic() {
-        let temp_dir = std::env::temp_dir();
-        let pid_file = temp_dir.join("test_daemon.pid");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_daemon.pid");
         
         let args = StartArgs {
             port: 8086,
@@ -688,8 +824,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_daemon_with_mcp() {
-        let temp_dir = std::env::temp_dir();
-        let pid_file = temp_dir.join("test_daemon_mcp.pid");
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_daemon_mcp.pid");
         
         let args = StartArgs {
             port: 8087,
@@ -732,7 +868,7 @@ mod tests {
         let result = start_daemon(args).await;
         
         // Clean up default PID file
-        let default_pid_file = std::env::temp_dir().join("embed-tool.pid");
+    let default_pid_file = pid_file_path();
         let _ = fs::remove_file(&default_pid_file);
         
         assert!(result.is_ok() || result.is_err());
@@ -740,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_server_with_valid_pid_file() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "999999").unwrap();
@@ -756,7 +892,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_server_invalid_pid_file() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Create a PID file with invalid content
         fs::write(&pid_file, "not_a_number").unwrap();
@@ -772,7 +908,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_status_with_stale_pid() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "999999").unwrap();
@@ -786,7 +922,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_status_with_valid_pid() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Use current process PID (should be running)
         let current_pid = std::process::id();
@@ -801,7 +937,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_status_invalid_pid_file_content() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Create a PID file with invalid content
         fs::write(&pid_file, "invalid_pid").unwrap();
@@ -815,7 +951,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_server_running_with_stale_pid() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "999999").unwrap();
@@ -829,7 +965,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_server_running_with_valid_pid() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Use current process PID
         let current_pid = std::process::id();
@@ -845,7 +981,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_server_running_invalid_pid_content() {
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         
         // Create PID file with invalid content
         fs::write(&pid_file, "not_a_number").unwrap();
@@ -882,7 +1018,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_start_server_already_running() {
         // First, simulate a server already running by creating a PID file
-        let pid_file = std::env::temp_dir().join("embed-tool.pid");
+        let pid_file = pid_file_path();
         let current_pid = std::process::id();
         fs::write(&pid_file, current_pid.to_string()).unwrap();
         

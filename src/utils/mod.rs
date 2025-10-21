@@ -1,4 +1,49 @@
-/// Generate a unique connection ID
+//! Utility functions for the embedding server.
+//!
+//! This module provides common utilities including:
+//!
+//! - **Connection ID generation**: Unique identifiers for MCP sessions
+//! - **Duration formatting**: Human-readable time display
+//! - **Model distillation**: Integration with Python `model2vec` CLI
+//! - **Path helpers**: Cross-platform path resolution
+//!
+//! ## Model Distillation
+//!
+//! The `distill` function wraps the external Python `model2vec` tool to create
+//! custom embedding models with reduced dimensionality via PCA.
+//!
+//! ## Examples
+//!
+//! ```rust
+//! use static_embedding_server::utils::{generate_connection_id, format_duration};
+//!
+//! // Generate a unique connection ID
+//! let conn_id = generate_connection_id();
+//! assert!(conn_id.starts_with("conn_"));
+//!
+//! // Format duration for display
+//! let duration = std::time::Duration::from_secs(125);
+//! assert_eq!(format_duration(duration), "2m 5s");
+//! ```
+
+/// Generate a unique connection ID for MCP sessions.
+///
+/// Creates an identifier combining current timestamp and random component
+/// to ensure uniqueness across server restarts.
+///
+/// # Returns
+///
+/// A string in the format `conn_{timestamp}_{random}` where both components
+/// are hexadecimal encoded.
+///
+/// # Examples
+///
+/// ```
+/// # use static_embedding_server::utils::generate_connection_id;
+/// let id = generate_connection_id();
+/// assert!(id.starts_with("conn_"));
+/// assert!(id.len() > 10);
+/// ```
 pub fn generate_connection_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let timestamp = SystemTime::now()
@@ -293,7 +338,7 @@ mod tests {
         // Test the auto-versioning logic for existing files
         use std::path::PathBuf;
 
-        let base_path = PathBuf::from("/tmp/test_model");
+        let _base_path = PathBuf::from("/tmp/test_model");
 
         // Simulate the versioning logic
         let file_stem = "test_model";

@@ -1,3 +1,42 @@
+//! HTTP API handlers for OpenAI-compatible embedding endpoints.
+//!
+//! This module implements the core HTTP API with:
+//! - **POST /v1/embeddings**: Generate embeddings from text input
+//! - **GET /v1/models**: List available embedding models
+//! - **GET /health**: Health check endpoint
+//! - **POST /api/register**: API key registration (if enabled)
+//!
+//! All endpoints use OpenAI-compatible request/response formats for easy integration.
+//!
+//! # Error Handling
+//!
+//! Errors are returned as JSON with OpenAI-compatible structure:
+//!
+//! ```json
+//! {
+//!   "error": {
+//!     "message": "Model not found: invalid-model",
+//!     "type": "invalid_request_error",
+//!     "param": "model",
+//!     "code": null
+//!   }
+//! }
+//! ```
+//!
+//! # Examples
+//!
+//! ```bash
+//! # Generate embeddings
+//! curl -X POST http://localhost:8080/v1/embeddings \
+//!   -H "Authorization: Bearer embed-YOUR-KEY" \
+//!   -H "Content-Type: application/json" \
+//!   -d '{"input":["Hello world"], "model":"potion-32M"}'
+//!
+//! # List models
+//! curl http://localhost:8080/v1/models \
+//!   -H "Authorization: Bearer embed-YOUR-KEY"
+//! ```
+
 use axum::{
     extract::{Json, Query, State},
     http::StatusCode,
@@ -15,67 +54,106 @@ use super::state::AppState;
 // Request/Response Structures
 // ============================================================================
 
+/// Request structure for POST /v1/embeddings endpoint.
+///
+/// Compatible with OpenAI's embeddings API format.
 #[derive(Deserialize)]
 pub struct EmbeddingRequest {
+    /// Input text(s) to generate embeddings for. Cannot be empty.
     pub input: Vec<String>,
+    /// Model to use for embedding generation. If omitted, uses default model.
     pub model: Option<String>,
+    /// Encoding format for embeddings. Only "float" is supported.
     pub encoding_format: Option<String>, // "float" or "base64" (we only support float)
+    /// Target dimensions for output embeddings (not yet implemented).
     pub dimensions: Option<usize>,       // For dimension reduction (not implemented)
+    /// User identifier for tracking and analytics.
     pub user: Option<String>,            // For tracking
 }
 
+/// Query parameters for endpoints supporting model selection.
 #[derive(Deserialize)]
 pub struct QueryParams {
+    /// Optional model name parameter for GET endpoints.
     pub model: Option<String>,
 }
 
+/// Response structure for POST /v1/embeddings endpoint.
+///
+/// Returns embeddings with usage statistics.
 #[derive(Serialize)]
 pub struct EmbeddingResponse {
+    /// Object type identifier ("list").
     pub object: String,
+    /// Array of embedding results, one per input text.
     pub data: Vec<EmbeddingData>,
+    /// Model used for generating embeddings.
     pub model: String,
+    /// Token usage statistics.
     pub usage: Usage,
 }
 
+/// Individual embedding result within EmbeddingResponse.
 #[derive(Serialize)]
 pub struct EmbeddingData {
+    /// Object type identifier ("embedding").
     pub object: String,
+    /// Dense vector embedding.
     pub embedding: Vec<f32>,
+    /// Index of this embedding in the input array.
     pub index: usize,
 }
 
+/// Token usage statistics for billing and monitoring.
 #[derive(Serialize)]
 pub struct Usage {
+    /// Number of tokens processed (approximated from input length).
     pub prompt_tokens: usize,
+    /// Total tokens (same as prompt_tokens for embeddings).
     pub total_tokens: usize,
 }
 
+/// Response structure for GET /v1/models endpoint.
 #[derive(Serialize)]
 pub struct ModelsResponse {
+    /// Object type identifier ("list").
     pub object: String,
+    /// Array of available models.
     pub data: Vec<ModelInfo>,
 }
 
+/// Information about a single available model.
 #[derive(Serialize)]
 pub struct ModelInfo {
+    /// Model identifier used in API requests.
     pub id: String,
+    /// Object type identifier ("model").
     pub object: String,
+    /// Unix timestamp of model creation/loading.
     pub created: u64,
+    /// Owner/provider of the model (e.g., "static-embedding-server").
     pub owned_by: String,
 }
 
+/// API error response structure (OpenAI-compatible).
 #[derive(Serialize)]
 #[derive(Debug)]
 pub struct ApiError {
+    /// Error details.
     pub error: ErrorDetails,
 }
 
+/// Detailed error information.
 #[derive(Serialize)]
 #[derive(Debug)]
 pub struct ErrorDetails {
+    /// Human-readable error message.
     pub message: String,
+    /// Error classification ("invalid_request_error", "server_error", etc.).
     pub r#type: String,
+    /// Parameter that caused the error (if applicable).
     pub param: Option<String>,
+    /// Error code for programmatic handling.
     pub code: Option<String>,
 }
 
@@ -83,7 +161,34 @@ pub struct ErrorDetails {
 // Route Handlers
 // ============================================================================
 
+/// Generate embeddings for input text(s).
+///
 /// POST /v1/embeddings - OpenAI-compatible embedding endpoint
+///
+/// # Arguments
+///
+/// * `state` - Application state containing loaded models
+/// * `params` - Query parameters (optional model selection)
+/// * `request` - JSON request body with input texts and options
+///
+/// # Returns
+///
+/// * `Ok(EmbeddingResponse)` - Embeddings with usage statistics
+/// * `Err(ApiError)` - Error with details (400/404/500 status codes)
+///
+/// # Errors
+///
+/// - `400 invalid_request_error`: Empty input, invalid encoding format
+/// - `404 model_not_found_error`: Requested model not loaded
+/// - `500 server_error`: Model computation failed
+///
+/// # Examples
+///
+/// ```bash
+/// curl -X POST http://localhost:8080/v1/embeddings \
+///   -H "Authorization: Bearer embed-YOUR-KEY" \
+///   -d '{"input":["Hello world"], "model":"potion-32M"}'
+/// ```
 pub async fn embeddings_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<QueryParams>,
@@ -222,7 +327,24 @@ pub async fn embeddings_handler(
     Ok(ResponseJson(response))
 }
 
+/// List all available embedding models.
+///
 /// GET /v1/models - List available models
+///
+/// # Arguments
+///
+/// * `state` - Application state containing loaded models
+///
+/// # Returns
+///
+/// JSON list of available models with metadata
+///
+/// # Examples
+///
+/// ```bash
+/// curl http://localhost:8080/v1/models \
+///   -H "Authorization: Bearer embed-YOUR-KEY"
+/// ```
 pub async fn models_handler(
     State(state): State<Arc<AppState>>,
 ) -> ResponseJson<ModelsResponse> {
@@ -245,7 +367,13 @@ pub async fn models_handler(
     })
 }
 
-/// Handler for unsupported endpoints
+/// Reject requests to unsupported endpoints.
+///
+/// Returns a helpful error message directing users to supported operations.
+///
+/// # Returns
+///
+/// 400 Bad Request with error explaining that only embedding operations are supported
 pub async fn unsupported_handler() -> (StatusCode, ResponseJson<ApiError>) {
     let error = ApiError {
         error: ErrorDetails {
@@ -302,6 +430,16 @@ mod tests {
     impl Model for MockModel {
         fn encode(&self, inputs: &[String]) -> Vec<Vec<f32>> {
             inputs.iter().map(|_| vec![0.1, 0.2, 0.3]).collect()
+        }
+    }
+
+    // Mock model that panics when encoding to simulate spawn_blocking JoinError
+    #[derive(Clone)]
+    struct MockModelPanics;
+
+    impl Model for MockModelPanics {
+        fn encode(&self, _inputs: &[String]) -> Vec<Vec<f32>> {
+            panic!("simulated model panic during encode");
         }
     }
 
@@ -493,6 +631,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_models_handler_lists_models() {
+        let state = create_test_app_state();
+        let result = models_handler(axum::extract::State(state)).await;
+        let Json(models_response) = result;
+        assert_eq!(models_response.object, "list");
+        // We inserted two models in create_test_app_state
+        assert_eq!(models_response.data.len(), 2);
+        let ids: Vec<String> = models_response.data.iter().map(|m| m.id.clone()).collect();
+        assert!(ids.contains(&"potion-32M".to_string()));
+        assert!(ids.contains(&"test-model".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_unsupported_handler_returns_error() {
+        let (status, Json(err)) = unsupported_handler().await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.error.r#type, "invalid_request_error");
+        assert_eq!(err.error.code.as_deref(), Some("unsupported_endpoint"));
+        assert!(err.error.message.contains("only supports embedding"));
+    }
+
+    #[test]
+    fn test_create_api_router_compiles() {
+        // Ensure router can be created without panicking
+        let _router = create_api_router();
+        assert!(true);
+    }
+
+    #[tokio::test]
     async fn test_embeddings_handler_model_from_query_params() {
         let state = create_test_app_state();
         let request = EmbeddingRequest {
@@ -544,6 +711,69 @@ mod tests {
         assert_eq!(error.error.r#type, "invalid_request_error");
         assert!(error.error.message.contains("only supports embedding operations"));
         assert_eq!(error.error.code, Some("unsupported_endpoint".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_large_batch_parallel() {
+        // Ensure the parallel chunking path (> 32 inputs) is exercised
+        let state = create_test_app_state();
+        let inputs: Vec<String> = (0..33).map(|i| format!("text {}", i)).collect();
+
+        let request = EmbeddingRequest {
+            input: inputs,
+            model: Some("test-model".to_string()),
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let Json(response) = result.unwrap();
+        assert_eq!(response.data.len(), 33);
+        assert_eq!(response.model, "test-model");
+    }
+
+    #[tokio::test]
+    async fn test_embeddings_handler_spawn_blocking_error_returns_500() {
+        // Use a model that panics in encode so spawn_blocking returns a JoinError
+        let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
+        models.insert("panic-model".to_string(), Arc::new(MockModelPanics));
+
+        let state = Arc::new(AppState {
+            models,
+            default_model: "panic-model".to_string(),
+            startup_time: std::time::SystemTime::now(),
+        });
+
+        // Trigger the parallel path (>32 items)
+        let inputs: Vec<String> = (0..33).map(|i| format!("text {}", i)).collect();
+        let request = EmbeddingRequest {
+            input: inputs,
+            model: Some("panic-model".to_string()),
+            encoding_format: None,
+            dimensions: None,
+            user: None,
+        };
+
+        let result = embeddings_handler(
+            axum::extract::State(state),
+            axum::extract::Query(QueryParams { model: None }),
+            Json(request),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let (status, Json(error)) = result.err().unwrap();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.error.r#type, "server_error");
+        assert_eq!(error.error.message, "Embedding generation failed");
     }
 
     #[tokio::test]

@@ -1,3 +1,40 @@
+//! Application state management for embedding models.
+//!
+//! This module manages the lifecycle of loaded embedding models and provides
+//! thread-safe access via Arc-wrapped trait objects.
+//!
+//! ## Model Loading
+//!
+//! Models are loaded concurrently on server startup using `tokio::task::spawn_blocking`
+//! to prevent blocking the async runtime. Failed model loads are logged but don't
+//! prevent the server from starting with successfully loaded models.
+//!
+//! ## Default Models
+//!
+//! The default model fallback order is:
+//! 1. `potion-32M` (high-quality balanced model)
+//! 2. `potion-8M` (faster, smaller model)
+//! 3. First available model
+//!
+//! ## Thread Safety
+//!
+//! All models are wrapped in `Arc<dyn Model>` for safe sharing across request handlers.
+//! The entire `AppState` implements `Clone` for efficient sharing via Axum's State extractor.
+//!
+//! ## Examples
+//!
+//! ```no_run
+//! use static_embedding_server::server::state::AppState;
+//!
+//! #[tokio::main]
+//! async fn main() -> anyhow::Result<()> {
+//!     let state = AppState::new().await?;
+//!     println!("Loaded {} models", state.models.len());
+//!     println!("Default model: {}", state.default_model);
+//!     Ok(())
+//! }
+//! ```
+
 use futures::future::join_all;
 use model2vec_rs::model::StaticModel;
 use std::collections::HashMap;
@@ -7,8 +44,20 @@ use tokio::task;
 use tracing::{info, warn};
 use anyhow::anyhow;
 
-/// Trait for model operations used in the server
+/// Trait for model operations used in the server.
+///
+/// This abstraction allows for testing and potential support of different
+/// embedding model implementations.
 pub trait Model: Send + Sync {
+    /// Encode input texts into dense vector embeddings.
+    ///
+    /// # Arguments
+    ///
+    /// * `inputs` - Array of text strings to encode
+    ///
+    /// # Returns
+    ///
+    /// Vector of embeddings, one per input text
     fn encode(&self, inputs: &[String]) -> Vec<Vec<f32>>;
 }
 
@@ -21,15 +70,49 @@ impl Model for StaticModel {
     }
 }
 
-/// Shared application state containing loaded models
+/// Shared application state containing loaded models.
+///
+/// This structure is cloned cheaply (via Arc) and passed to all request handlers
+/// through Axum's State extractor.
 #[derive(Clone)]
 pub struct AppState {
+    /// Map of model names to model instances
     pub models: HashMap<String, Arc<dyn Model>>,
+    /// Name of the default model used when no model is specified
     pub default_model: String,
+    /// Server startup timestamp for uptime calculations
     pub startup_time: SystemTime,
 }
 
 impl AppState {
+    /// Create a new AppState with models loaded from default sources.
+    ///
+    /// Attempts to load multiple models concurrently:
+    /// - `potion-8M`: Fast, compact model from minishlab
+    /// - `potion-32M`: High-quality balanced model from minishlab
+    /// - `code-distilled`: Custom distilled model (if available locally)
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(AppState)` - State with at least one successfully loaded model
+    /// * `Err(anyhow::Error)` - All model loads failed
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if all model loads fail. Individual model failures are
+    /// logged as warnings and don't prevent server startup.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use static_embedding_server::server::state::AppState;
+    /// # #[tokio::main]
+    /// # async fn main() -> anyhow::Result<()> {
+    /// let state = AppState::new().await?;
+    /// assert!(!state.models.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn new() -> Result<Self, anyhow::Error> {
         info!("Loading Model2Vec models...");
 
@@ -144,7 +227,7 @@ mod tests {
 
     #[test]
     fn test_app_state_clone() {
-        let mut models = HashMap::new();
+        let models = HashMap::new();
         let startup_time = SystemTime::now();
 
         let state = AppState {
@@ -178,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_app_state_fields() {
-        let mut models = HashMap::new();
+        let models = HashMap::new();
         let startup_time = SystemTime::now();
 
         let state = AppState {
