@@ -9,7 +9,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::server::state::AppState;
 use crate::server::embeddings_handler;
-// use crate::server::limit::create_rate_limit_layer;
+use crate::server::limit::create_rate_limit_layer;
 
 /// Start the embedding HTTP server
 pub async fn start_http_server(
@@ -26,8 +26,8 @@ pub async fn start_http_server(
     // Initialize AppState with models
     let app_state = Arc::new(AppState::new().await.map_err(|e| anyhow::anyhow!("Failed to initialize app state: {}", e))?);
 
-    // Create rate limiting layer
-    // let rate_limit_layer = create_rate_limit_layer(rate_limit_rps, rate_limit_burst);
+    // Create rate limiting layer for IP-based rate limiting
+    let rate_limit_layer = create_rate_limit_layer(rate_limit_rps, rate_limit_burst);
 
     // Build the router
     let mut app = Router::new()
@@ -39,7 +39,7 @@ pub async fn start_http_server(
     app = app.layer(
         ServiceBuilder::new()
             .layer(CorsLayer::permissive())
-            // .layer(rate_limit_layer)
+            .layer(rate_limit_layer)
     );
 
     // Create TCP listener

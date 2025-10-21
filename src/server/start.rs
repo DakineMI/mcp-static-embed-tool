@@ -69,9 +69,8 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 
-use rustls::pki_types::PrivateKeyDer;
-use rustls_pemfile::{certs, pkcs8_private_keys};
-use tokio_rustls::{TlsAcceptor, rustls::ServerConfig as RustlsServerConfig};
+use axum_server::tls_rustls::RustlsConfig;
+use std::net::SocketAddr;
 
 use crate::logs::init_logging_and_metrics;
 use crate::server::api::create_api_router;
@@ -313,65 +312,79 @@ pub async fn start_server(config: ServerConfig) -> AnyhowResult<()> {
     /// # Examples
     ///
     /// ```ignore
-    /// let acceptor = create_tls_acceptor("cert.pem", "key.pem").await?;
+    /// let config = create_rustls_config("cert.pem", "key.pem").await?;
     /// ```
-async fn create_tls_acceptor(cert_path: &str, key_path: &str) -> AnyhowResult<TlsAcceptor> {
-    let cert_file = fs::read(cert_path)
+async fn create_rustls_config(cert_path: &str, key_path: &str) -> AnyhowResult<RustlsConfig> {
+    RustlsConfig::from_pem_file(cert_path, key_path)
         .await
-        .map_err(|e| anyhow!("Failed to read certificate file {}: {}", cert_path, e))?;
-    let key_file = fs::read(key_path)
-        .await
-        .map_err(|e| anyhow!("Failed to read private key file {}: {}", key_path, e))?;
-
-    let certs: Vec<_> = certs(&mut cert_file.as_slice())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| anyhow!("Failed to parse certificates: {}", e))?
-        .into_iter()
-        .map(|cert| cert.to_vec().into())
-        .collect::<Vec<_>>();
-
-    let keys: Vec<_> = pkcs8_private_keys(&mut key_file.as_slice())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| anyhow!("Failed to parse private keys: {}", e))?;
-    let key = PrivateKeyDer::Pkcs8(keys[0].secret_pkcs8_der().to_vec().into());
-
-    let config = RustlsServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|err| anyhow!("Failed to build TLS config: {}", err))?;
-
-    Ok(TlsAcceptor::from(Arc::new(config)))
+        .map_err(|e| anyhow!("Failed to build RustlsConfig: {}", e))
 }
 
 /// Start the embedding server in stdio mode (MCP protocol).
 ///
-/// **Note**: This mode is currently disabled due to pending MCP trait implementations.
-///
-/// When enabled, this mode will:
-/// - Read MCP requests from stdin
-/// - Write MCP responses to stdout
-/// - Use stderr for logging
+/// This mode implements the Model Context Protocol over stdin/stdout:
+/// - Reads MCP requests from stdin
+/// - Writes MCP responses to stdout
+/// - Uses stderr for logging
 ///
 /// # Arguments
 ///
-/// * `_config` - Server configuration (unused in current implementation)
+/// * `_config` - Server configuration (currently unused for stdio mode)
 ///
 /// # Returns
 ///
-/// Currently returns an error indicating MCP mode is disabled.
+/// * `Ok(())` - Server started and ran successfully until EOF on stdin
+/// * `Err(anyhow::Error)` - Server initialization or execution failure
 ///
 /// # Examples
 ///
 /// ```ignore
-/// // MCP is currently disabled
-/// let result = start_stdio_server(config).await;
-/// assert!(result.is_err());
+/// let config = ServerConfig { /* ... */ };
+/// start_stdio_server(config).await?;
 /// ```
 async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
-    // MCP is currently disabled due to trait implementation issues
-    Err(anyhow!(
-        "MCP mode is currently disabled. Use HTTP mode instead."
-    ))
+    // Initialize structured logging (stderr only for stdio mode)
+    init_logging_and_metrics(false);
+    
+    info!("Starting MCP server in stdio mode");
+    
+    // Generate a connection ID for this stdio session
+    let connection_id = generate_connection_id();
+    
+    // Create the embedding service for this session
+    let service = EmbeddingService::new(connection_id.clone());
+    
+    info!(
+        connection_id = %connection_id,
+        "MCP stdio server initialized"
+    );
+    
+    // Create stdio transport using tokio stdin/stdout
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    
+    // Serve MCP over stdio
+    match rmcp::serve_server(service.clone(), (stdin, stdout)).await {
+        Ok(server) => {
+            info!("MCP stdio server started successfully");
+            // Wait for the server to complete (will run until stdin EOF)
+            server.waiting().await;
+            info!(
+                connection_id = %service.connection_id,
+                connection_time = %format_duration(Instant::now().duration_since(service.created_at)),
+                "MCP stdio server shutting down"
+            );
+            Ok(())
+        }
+        Err(e) => {
+            error!(
+                connection_id = %service.connection_id,
+                error = %e,
+                "MCP stdio server failed to start"
+            );
+            Err(anyhow!("Failed to start MCP stdio server: {}", e))
+        }
+    }
 }
 
 /// Start the embedding server in Unix socket mode.
@@ -518,10 +531,10 @@ async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
         rate_limit_burst = rate_limit_burst,
         "Starting embedding server with OpenAI-compatible API and MCP support"
     );
-    // Create a TCP listener for the HTTP server
-    let listener = TcpListener::bind(&bind_address)
-        .await
-        .map_err(|e| anyhow!("Failed to bind to address {bind_address}: {e}"))?;
+    // Parse socket address and bind
+    let addr: SocketAddr = bind_address
+        .parse()
+        .map_err(|e| anyhow!("Invalid bind address {bind_address}: {e}"))?;
 
     // Ensure API key database directory exists
     if let Some(parent) = Path::new(&api_key_db_path).parent() {
@@ -682,18 +695,18 @@ async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
     // Use the shared double ctrl-c handler
     let signal = handle_double_ctrl_c();
 
-    if let (Some(_cert_path), Some(_key_path)) = (tls_cert_path, tls_key_path) {
-        // TODO: Implement TLS support
-        info!("TLS not yet implemented - running on plain HTTP");
-        axum::serve(listener, router)
-            .with_graceful_shutdown(signal)
-            .await
+    if let (Some(cert_path), Some(key_path)) = (tls_cert_path, tls_key_path) {
+        info!("🔒 Starting HTTPS server with TLS");
+        let rustls_config = create_rustls_config(&cert_path, &key_path).await?;
+        axum_server::bind_rustls(addr, rustls_config)
+            .serve(router.into_make_service())
+            .await?;
     } else {
-        info!("TLS disabled - running on plain HTTP");
-        axum::serve(listener, router)
+        info!("🔓 Starting HTTP server without TLS");
+        axum::serve(TcpListener::bind(addr).await?, router)
             .with_graceful_shutdown(signal)
-            .await
-    }?;
+            .await?;
+    }
 
     // All ok
     Ok(())
@@ -708,7 +721,7 @@ mod tests {
     use tokio::time::timeout;
 
     #[tokio::test]
-    async fn test_start_server_stdio_mode() {
+    async fn test_start_server_stdio_mode_runs_until_eof() {
         let config = ServerConfig {
             server_url: "test".to_string(),
             bind_address: None,
@@ -723,14 +736,9 @@ mod tests {
             enable_mcp: false,
         };
 
-        let result = start_server(config).await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("MCP mode is currently disabled")
-        );
+        // The stdio server should run until stdin EOF; use a short timeout to validate it doesn't immediately exit
+        let result = tokio::time::timeout(Duration::from_millis(100), start_server(config)).await;
+        assert!(result.is_err(), "stdio server should not exit within timeout");
     }
 
     #[tokio::test]
@@ -760,12 +768,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_tls_acceptor_invalid_paths() {
+    async fn test_create_rustls_config_invalid_paths() {
         // Use clearly invalid cert/key paths to trigger error paths
-        let result = create_tls_acceptor("/path/does/not/exist/cert.pem", "/path/does/not/exist/key.pem").await;
+        let result = create_rustls_config("/path/does/not/exist/cert.pem", "/path/does/not/exist/key.pem").await;
         assert!(result.is_err());
         let msg = result.err().unwrap().to_string();
-        assert!(msg.contains("Failed to read certificate file") || msg.contains("No such file") || msg.contains("failed"));
+        assert!(msg.contains("Failed to build RustlsConfig") || msg.contains("No such file") || msg.contains("failed"));
     }
 
     #[tokio::test]
@@ -818,10 +826,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_tls_acceptor_invalid_cert() {
-        let result = create_tls_acceptor("/nonexistent/cert.pem", "/nonexistent/key.pem").await;
+    async fn test_create_rustls_config_invalid_cert() {
+        let result = create_rustls_config("/nonexistent/cert.pem", "/nonexistent/key.pem").await;
         assert!(result.is_err());
-        // Just check that it returns an error, don't check the message since TlsAcceptor doesn't implement Debug
+        // Just check that it returns an error
     }
 
     #[tokio::test]
@@ -865,9 +873,9 @@ mod tests {
             enable_mcp: false,
         };
 
-        let result = start_http_server(config).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Failed to bind"));
+    let result = start_http_server(config).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("Invalid bind address"));
     }
 
     #[tokio::test]

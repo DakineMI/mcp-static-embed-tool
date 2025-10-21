@@ -4,8 +4,8 @@ globs: *
 ---
 
 ---
-description: AI rules derived by SpecStory from the project AI interaction history
----
+
+## description: AI rules derived by SpecStory from the project AI interaction history
 
 ## PROJECT OVERVIEW
 
@@ -164,18 +164,19 @@ curl -X POST http://localhost:8080/v1/embeddings \
 13. **Test Database Setup**: Corrected the test manager to use proper database paths instead of incompatible sled Config patterns.
 
 ### Current Status:
-- ✅ **Compiles successfully** with `cargo check` and `cargo build`
-- ✅ **Core HTTP API** functionality preserved
-- ✅ **CLI commands** working
-- ✅ **Model management** operational
+
+- ✅ **Compilation**: Code compiles cleanly with `cargo check`
+- ✅ **Core Functionality**: HTTP API and CLI work correctly
+- ✅ **MCP Support**: Conditionally disabled to resolve conflicts, framework preserved for future re-enablement
+- ✅ **Test Suite**: All tests now passing
+- ✅ **HTTP API**: Fully functional OpenAI-compatible `/v1/embeddings` endpoint
+- ✅ **CLI**: Working server lifecycle management (`server start`, `server stop`, etc.)
+- ✅ **Model Management**: Multi-model support with graceful fallbacks
 - ✅ **Authentication**: API key system for secure access
-- ⚠️ **MCP tools** partially disabled (needs rmcp crate API alignment)
 - ⚠️ **TLS support** temporarily disabled (needs rustls/axum API update)
 - ⚠️ **Rate limiting** temporarily disabled (needs tower_governor compatibility fix)
+- ⚠️ **MCP tools** partially disabled (needs rmcp crate API alignment)
 - ✅ **Test Suite**: All tests now passing
-- ✅ **Code Coverage**: 35.36% (395/1117 lines covered)
-
-The project is now in a functional state for basic HTTP API and CLI operations. The disabled features can be re-enabled once the respective crate APIs are updated or workarounds are implemented.
 
 **Compilation Errors and Fixes**:
 
@@ -187,7 +188,7 @@ The project is now in a functional state for basic HTTP API and CLI operations. 
 - **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
 - **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
-- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err(|e| anyhow::anyhow!(e))`.
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn StdError>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 - **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
@@ -242,18 +243,19 @@ The AI coding assistant must add a large number of tests, so go through and quic
 The AI coding assistant does not need to run tarpaulin after every test it adds. You **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
 
 The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands. The AI coding assistant **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
-The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands.
+The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands
 
 **All requirements must be met:**
 
 - Every method of every file **MUST** have a test
-- **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. 
+- **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin.
 - The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands
 - Code coverage, quality, maintainability, documentation, and readability are all expected to be at or above minimum professional thresholds.
 
 Going forward, use `fd` for file discovery and navigation.
 
 Here are handy fd equivalents you can reuse:
+
 - List all files under src/server
   - fd . src/server -t f
 - List all Rust files anywhere under src
@@ -267,7 +269,7 @@ Here are handy fd equivalents you can reuse:
 
 Note: fd’s syntax is fd [pattern] [path]. If your pattern contains a slash, use --full-path, or use a match-all pattern (.) and provide the directory as the path.
 
-It is expected you will write good error free accurate tests the first time without needing to run tests after each one or file. 
+It is expected you will write good error free accurate tests the first time without needing to run tests after each one or file.
 
 The AI coding assistant does not need to run tarpaulin after every test it adds. The AI coding assistant **MUST** reasonably estimate that test coverage has exceeded 95% for the project source code before running test or tarpolin. And every method of every file **MUST** have a test.
 The AI coding assistant **MUST** wait for commands issued to complete, then read their results **BEFORE** issuing additional commands
@@ -281,10 +283,28 @@ When the AI coding assistant generates test cases, it must follow these steps:
 
 If the AI coding assistant is unable to automatically test the cases, it will:
 
-*   Describe the proposed test case and ask for guidance.
-*   Provide the rationale behind the test case.
-*   Explain how to manually run the test and verify the results.
+- Describe the proposed test case and ask for guidance.
+- Provide the rationale behind the test case.
+- Explain how to manually run the test and verify the results.
 
 Remember to use fd for file navigation and rg for searching.
 
 When we run the application or tests, we can not generate garbage test artifacts without cleaning it up.
+
+## TECHNICAL DEBT
+
+The following features have been temporarily disabled and need to be addressed:
+
+- **TLS support** - Temporarily disabled due to rustls/axum API update
+- **Rate limiting** - Temporarily disabled due to tower_governor compatibility fix
+- **MCP tools** - Partially disabled due to rmcp crate API alignment
+
+Prioritize fixing these issues before adding new features or focusing solely on code coverage metrics.
+
+The following features have been temporarily disabled and need to be addressed:
+
+- **TLS support** - Temporarily disabled due to rustls/axum API update
+- **Rate limiting** - Temporarily disabled due to tower_governor compatibility fix
+- **MCP tools** - Partially disabled due to rmcp crate API alignment
+
+Prioritize fixing these issues before adding new features or focusing solely on code coverage metrics.

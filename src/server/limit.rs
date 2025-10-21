@@ -131,7 +131,7 @@ impl KeyExtractor for RobustIpKeyExtractor {
 ///
 /// - `rps`: Allowed requests per second
 /// - `burst`: Allowed burst size
-pub fn create_rate_limit_layer(rps: u32, burst: u32) -> GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, Arc<HashMap<String, InMemoryState>>> {
+pub fn create_rate_limit_layer(rps: u32, burst: u32) -> GovernorLayer<RobustIpKeyExtractor> {
     // Create a rate limit configuration using IP addresses
     let config = GovernorConfigBuilder::default()
         .per_second(rps as u64)
