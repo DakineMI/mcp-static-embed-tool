@@ -367,7 +367,7 @@ async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
         Ok(server) => {
             info!("MCP stdio server started successfully");
             // Wait for the server to complete (will run until stdin EOF)
-            server.waiting().await;
+            let _ = server.waiting().await;
             info!(
                 connection_id = %service.connection_id,
                 connection_time = %format_duration(Instant::now().duration_since(service.created_at)),

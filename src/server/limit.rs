@@ -34,6 +34,7 @@ use axum::{
 };
 use governor::{
     clock::DefaultClock,
+    middleware::NoOpMiddleware,
     state::InMemoryState,
     state::NotKeyed,
     Quota, RateLimiter,
@@ -133,7 +134,7 @@ impl KeyExtractor for RobustIpKeyExtractor {
 pub fn create_rate_limit_layer(
     rps: u32,
     burst: u32,
-) -> GovernorLayer<RobustIpKeyExtractor, tower_governor::middleware::NoOpMiddleware, Body> {
+) -> GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, Body> {
     // Create a rate limit configuration using IP addresses
     let config = GovernorConfigBuilder::default()
         .per_second(rps as u64)

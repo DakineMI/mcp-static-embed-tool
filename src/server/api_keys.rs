@@ -145,7 +145,7 @@ impl ApiKeyManager {
         let key_id = Uuid::new_v4().to_string();
         
         // Generate a secure API key: embed-<base64-encoded-random-bytes>
-        let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
         let mut random_bytes = [0u8; 32];
         rng.fill_bytes(&mut random_bytes);
         let api_key = format!("embed-{}", STANDARD.encode(random_bytes));

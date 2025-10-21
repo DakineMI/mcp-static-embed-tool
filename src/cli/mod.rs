@@ -96,7 +96,7 @@ pub enum Commands {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum ServerAction {
-    /// Start the embedding server (HTTP API and MCP)
+    /// Start the server
     Start(StartArgs),
     /// Stop the running server
     Stop,
@@ -110,32 +110,28 @@ impl ServerAction {
     pub fn augment_subcommands(cmd: Command) -> Command {
         cmd
             .subcommand(
-                Command::new("start")
-                    .about("Start the embedding server (HTTP API and MCP)")
-                    .alias("s")
-                    .subcommand_negates_reqs(true)
-                    .subcommand_precedence_over_arg(true)
-                    .arg_required_else_help(false)
-                    .subcommand(StartArgs::augment_args(Command::new("start")))
+                StartArgs::augment_args(
+                    Command::new("start")
+                        .about("Start the embedding server (HTTP API and MCP)")
+                        .alias("s"),
+                ),
             )
             .subcommand(
                 Command::new("stop")
                     .about("Stop the running server")
-                    .alias("x")
+                    .alias("x"),
             )
             .subcommand(
                 Command::new("status")
                     .about("Get server status")
-                    .alias("st")
+                    .alias("st"),
             )
             .subcommand(
-                Command::new("restart")
-                    .about("Restart the server")
-                    .alias("r")
-                    .subcommand_negates_reqs(true)
-                    .subcommand_precedence_over_arg(true)
-                    .arg_required_else_help(false)
-                    .subcommand(StartArgs::augment_args(Command::new("restart")))
+                StartArgs::augment_args(
+                    Command::new("restart")
+                        .about("Restart the server")
+                        .alias("r"),
+                ),
             )
     }
 
@@ -153,7 +149,7 @@ impl ServerAction {
             }
             _ => Err(clap::Error::raw(
                 clap::error::ErrorKind::InvalidSubcommand,
-                "Invalid server subcommand\n"
+                "Invalid server subcommand\n",
             )),
         }
     }
@@ -223,12 +219,14 @@ impl StartArgs {
                     .long("bind")
                     .help("Bind address")
                     .default_value("0.0.0.0")
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             )
             .arg(
                 Arg::new("socket_path")
                     .long("socket-path")
                     .help("Unix socket path (mutually exclusive with bind)")
                     .conflicts_with("bind")
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             )
             .arg(
                 Arg::new("models")
@@ -243,7 +241,7 @@ impl StartArgs {
                     .long("default-model")
                     .help("Default model to use")
                     .default_value("potion-32M")
-                    .value_parser(validate_model_name)
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             )
             .arg(
                 Arg::new("mcp")
@@ -277,33 +275,47 @@ impl StartArgs {
                 Arg::new("tls_key_path")
                     .long("tls-key-path")
                     .help("TLS private key file path")
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             )
     }
 
     pub fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
         Ok(StartArgs {
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             port: *matches.get_one::<u16>("port").unwrap_or(&8080),
             bind: matches.get_one::<String>("bind").unwrap_or(&"0.0.0.0".to_string()).clone(),
             socket_path: matches.get_one::<String>("socket_path").map(PathBuf::from),
             models: matches.get_one::<String>("models").cloned(),
             default_model: matches.get_one::<String>("default_model").unwrap_or(&"potion-32M".to_string()).clone(),
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             mcp: matches.get_flag("mcp"),
             auth_disabled: matches.get_flag("auth_disabled"),
             daemon: matches.get_flag("daemon"),
             pid_file: matches.get_one::<String>("pid_file").map(PathBuf::from),
-            tls_cert_path: matches.get_one::<String>("tls_cert_path").cloned(),
-            tls_key_path: matches.get_one::<String>("tls_key_path").cloned(),
+        fn get_str(matches: &ArgMatches, name: &str) -> Option<String> {
+            matches
+                .get_one::<String>(name)
+                .cloned()
+                .or_else(|| {
+                    matches
+                        .get_one::<std::ffi::OsString>(name)
+                        .map(|s| s.to_string_lossy().to_string())
+                })
+        }
+
+        Ok(StartArgs {
+            port: *matches.get_one::<u16>("port").unwrap_or(&8080),
+            bind: get_str(matches, "bind").unwrap_or_else(|| "0.0.0.0".to_string()),
+            socket_path: get_str(matches, "socket_path").map(PathBuf::from),
+            models: get_str(matches, "models"),
+            default_model: get_str(matches, "default_model").unwrap_or_else(|| "potion-32M".to_string()),
+            mcp: matches.get_flag("mcp"),
+            auth_disabled: matches.get_flag("auth_disabled"),
+            daemon: matches.get_flag("daemon"),
+            pid_file: get_str(matches, "pid_file").map(PathBuf::from),
+            tls_cert_path: get_str(matches, "tls_cert_path"),
+            tls_key_path: get_str(matches, "tls_key_path"),
         })
-    }
-}/// Validate models string: comma-separated non-empty names
-fn validate_models(s: &str) -> Result<(), String> {
-    if s.trim().is_empty() {
-        return Err("Models list cannot be empty".to_string());
-    }
-    let parts: Vec<&str> = s.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
-    if parts.is_empty() {
-        Err("No valid models found in list".to_string())
-    } else {
         Ok(())
     }
 }
