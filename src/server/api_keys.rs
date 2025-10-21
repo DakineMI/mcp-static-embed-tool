@@ -59,7 +59,6 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bincode::{Decode, Encode};
 use serde::{Deserialize, Serialize};
 use sled::Db;
-use std::env;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

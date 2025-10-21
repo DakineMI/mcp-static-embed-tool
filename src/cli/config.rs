@@ -416,6 +416,32 @@ mod tests {
         (dir, path)
     }
 
+    #[tokio::test]
+    async fn test_handle_embed_command_smoke() {
+        // Exercise handle_embed_command printing path with defaults
+        let args = EmbedArgs {
+            text: "Hello test".to_string(),
+            model: None,
+            format: "json".to_string(),
+        };
+        let result = handle_embed_command(args, None).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_batch_command_with_missing_input() {
+        // Provide a non-existent file path; function should not error (prints message)
+        let args = BatchArgs {
+            input: PathBuf::from("/definitely/does/not/exist.json"),
+            output: None,
+            model: Some("potion-8M".to_string()),
+            format: "json".to_string(),
+            batch_size: 32,
+        };
+        let result = handle_batch_command(args, None).await;
+        assert!(result.is_ok());
+    }
+
     #[test]
     fn test_get_config_path_default() {
         // Using a custom path to avoid environment interaction
