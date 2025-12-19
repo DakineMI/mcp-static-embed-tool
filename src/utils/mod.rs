@@ -96,7 +96,7 @@ pub async fn distill(
     model_name: &str,
     pca_dims: usize,
     output_path: Option<std::path::PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     use std::env;
     use std::fs;
     use std::path::PathBuf;
@@ -206,7 +206,7 @@ pub async fn distill(
         "✓ Model distilled successfully to: {}",
         final_output.display()
     );
-    Ok(())
+    Ok(final_output.to_string_lossy().to_string())
 }
 
 pub fn calculate_total(numbers: &[i32]) -> i32 {
