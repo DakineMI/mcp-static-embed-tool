@@ -265,11 +265,13 @@ impl StartArgs {
                 Arg::new("pid_file")
                     .long("pid-file")
                     .help("PID file location for daemon mode")
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             )
             .arg(
                 Arg::new("tls_cert_path")
                     .long("tls-cert-path")
                     .help("TLS certificate file path")
+                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
             )
             .arg(
                 Arg::new("tls_key_path")
@@ -280,18 +282,6 @@ impl StartArgs {
     }
 
     pub fn from_arg_matches(matches: &ArgMatches) -> Result<Self, clap::Error> {
-        Ok(StartArgs {
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-            port: *matches.get_one::<u16>("port").unwrap_or(&8080),
-            bind: matches.get_one::<String>("bind").unwrap_or(&"0.0.0.0".to_string()).clone(),
-            socket_path: matches.get_one::<String>("socket_path").map(PathBuf::from),
-            models: matches.get_one::<String>("models").cloned(),
-            default_model: matches.get_one::<String>("default_model").unwrap_or(&"potion-32M".to_string()).clone(),
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-            mcp: matches.get_flag("mcp"),
-            auth_disabled: matches.get_flag("auth_disabled"),
-            daemon: matches.get_flag("daemon"),
-            pid_file: matches.get_one::<String>("pid_file").map(PathBuf::from),
         fn get_str(matches: &ArgMatches, name: &str) -> Option<String> {
             matches
                 .get_one::<String>(name)
@@ -316,6 +306,22 @@ impl StartArgs {
             tls_cert_path: get_str(matches, "tls_cert_path"),
             tls_key_path: get_str(matches, "tls_key_path"),
         })
+    }
+}
+
+/// Validate models string: comma-separated non-empty names
+fn validate_models(s: &str) -> Result<(), String> {
+    if s.trim().is_empty() {
+        return Err("Models list cannot be empty".to_string());
+    }
+    let parts: Vec<&str> = s
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if parts.is_empty() {
+        Err("No valid models found in list".to_string())
+    } else {
         Ok(())
     }
 }

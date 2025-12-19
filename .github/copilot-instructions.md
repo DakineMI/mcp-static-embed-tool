@@ -3,8 +3,6 @@ description: AI rules derived by SpecStory from the project AI interaction histo
 globs: *
 ---
 
----
-
 ## description: AI rules derived by SpecStory from the project AI interaction history
 
 ## PROJECT OVERVIEW
@@ -308,3 +306,57 @@ The following features have been temporarily disabled and need to be addressed:
 - **MCP tools** - Partially disabled due to rmcp crate API alignment
 
 Prioritize fixing these issues before adding new features or focusing solely on code coverage metrics.
+
+When addressing the TLS support issue, the preferred approach is to configure Cargo.toml to enable either the "ring" or "aws-lc-rs" feature for rustls. For example, specifying `rustls = { version = "0.23", features = ["ring"] }` ensures the appropriate version is used.
+
+When addressing the TLS support issue, consider calling `CryptoProvider::install_default()` early in the `create_rustls_config` function. After implementing the fix, write a test to verify that it no longer panics. **This approach is not recommended for production code. Compile-time provider selection is preferred.**
+
+TLS relies on cryptographic elements like key algorithms and RNGs, and rustls uses a "CryptoProvider" to specify the appropriate library. If no provider is set, rustls will panic to avoid undefined behavior during certificate parsing and server config setup.
+If both crypto providers are enabled, there will be a conflict at compile-time; if none are selected, rustls will panic.
+To fix this, the user can install a provider via code by calling `CryptoProvider::install_default()` or adjust the Cargo features to specify a single provider by adding either "ring" or "aws-lc-rs" to the rustls dependency in Cargo.toml.
+
+**TLS Configuration Guidance**
+
+- If you only run the server locally without TLS (HTTP over plain TCP or Unix sockets) — you do **not** need the rustls crypto provider.
+- But if your code (or tests) calls rustls APIs (for example `RustlsConfig::from_pem_file`) or dependencies are compiled with TLS features enabled (like `axum-server` or `reqwest` with `rustls-tls`), rustls will require a crypto provider at runtime/compile-time — otherwise it panics as you observed.
+- So the final choice depends on whether you want to keep TLS functionality (and test it) as part of the project.
+
+**Why rustls requires a crypto provider (brief)**
+- rustls delegates crypto primitives (ECDSA, AES-GCM, HKDF, RNG) to a provider implementation like `ring` or `aws-lc-rs`.
+- If the crate features didn't force a particular provider at compile-time (or you didn't install one at runtime), rustls can't safely operate and panics to avoid undefined behavior.
+- That panic occurred during the test because the test called `create_rustls_config`, which triggers rustls to set up TLS, and the default provider couldn't be selected.
+
+**Options & tradeoffs (pick one)**
+
+1) No TLS locally, no changes to dependencies (recommended if you truly do not need TLS locally)
+- Keep server as HTTP-only in local dev and tests.
+- Avoid calling TLS functions in unit tests (skip or ignore tests that exercise TLS config).
+- Pros: Minimal changes, simple.
+- Cons: You won't test TLS code, which may be needed for production.
+
+2) Compile-time provider selection: add `ring` (or `aws-lc-rs`) feature to `rustls` in `Cargo.toml` (recommended if you want TLS test coverage)
+- Example:
+  ```toml
+  rustls = { version = "0.23", features = ["ring"] }
+  ```
+- Pros: Deterministic behavior, no runtime panic, tests using rustls will pass if `ring` builds.
+- Cons: Adds native compile requirements, increase binary size, might need minor platform adjustments. **Enabling the `ring` feature could require building the ring crate on the platform since it uses native code. For macOS, this should generally be fine, but it might vary for other platforms.**
+
+3) Runtime install of a CryptoProvider in tests only (workaround)
+- Call the proper runtime provider install function in test setup (e.g., `CryptoProvider::install(…)`).
+- Pros: Avoids compile-time features; can be used to enable provider only for tests.
+- Cons: `install_default()` or similar requires the right function and arguments — we previously tried `CryptoProvider::install_default()` incorrectly and got compile errors. This approach is more fragile and depends on the rustls API.
+
+4) Mock or skip TLS unit tests
+- If you want to keep code path but not build TLS at all in CI/dev, mark tests that exercise rustls as `#[ignore]` or move them to integration tests behind a feature flag.
+- Pros: Avoids altering dependencies or runtime behavior.
+- Cons: You won't get TLS coverage in unit tests by default.
+
+**Recommendation**
+- If the project intends to support TLS in production or provides `--tls-cert-path` flags, enable a crypto provider in `Cargo.toml` (option 2). That’s the cleanest solution and avoids ad-hoc runtime hacks.
+- If TLS is optional and not used in local dev or CI, leave TLS disabled and make the TLS tests conditional or ignored by default (option 4). Add a small developer doc to explain how to enable and test TLS locally if required.
+- Do not rely on `CryptoProvider::install_default()` runtime calls in production code — it’s less predictable than compile-time provider selection.
+
+**Based on the user feedback that TLS is scope creep, the recommended action is to keep TLS disabled for local development and testing. Therefore, the following rule is added:**
+
+**If TLS is not required for local development, avoid enabling TLS features or providers. Mark TLS-related tests as ignored or conditional, and ensure the project can run without TLS dependencies in local environments.**

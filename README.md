@@ -31,14 +31,12 @@ Static Embedding Server is a high-performance Rust-based embedding server that p
 - **OpenAI-compatible API**: `/v1/embeddings` endpoint matching OpenAI embedding API format
 - **Model distillation**: Built-in support for custom model creation via Model2Vec distillation
 - **Single instance control**: PID file-based process management ensuring only one server runs
-- **Authentication**: Simple API key authentication with optional self-service registration
 - **Rate limiting**: Configurable IP-based request rate limiting with burst control
 - **Health checks**: Built-in health monitoring and status endpoints
 - **Structured logging**: Comprehensive logging and metrics with tracing-subscriber
 - **MCP integration**: Model Context Protocol support for AI assistant integration
 - **Configuration management**: TOML-based hierarchical configuration with environment overrides
 - **Cross-platform**: Support for macOS, Linux, and Windows with proper path resolution
-- **TLS/HTTPS Support**: Secure connections with rustls-based TLS termination
 
 ## Installation
 
@@ -107,6 +105,15 @@ host = "0.0.0.0"
 tls_cert_path = "/etc/ssl/certs/server.crt"
 tls_key_path = "/etc/ssl/private/server.key"
 ```
+
+> ⚠️ TLS note: TLS is optional and not required for the core local development experience of this static embedding tool. By default, TLS support depends on the `rustls` crate and a cryptography provider (e.g., `ring` or `aws-lc-rs`) chosen at build time. If you plan to enable HTTPS in development or CI, build with a provider feature enabled in `Cargo.toml`, for example:
+>
+> ```toml
+> rustls = { version = "0.23", features = ["ring"] }
+> axum-server = { version = "0.7.2", features = ["tls-rustls"] }
+> ```
+>
+> Alternatively, run TLS-specific tests manually and skip them during normal development (they are optional and ignored by default).
 
 The embedding server is managed entirely through the CLI interface:
 

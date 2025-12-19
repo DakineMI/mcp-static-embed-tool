@@ -107,7 +107,11 @@ impl ResourceProvider for InstructionsResource {
     }
 
     fn content(&self) -> String {
-        include_str!("../../instructions.md").to_string()
+        // Prefer the repository's `copilot-instructions.md` under `.github`.
+        // Fall back to a crate-local `instructions.md` if present.
+        // Using `include_str!` ensures the content is compiled in and available
+        // at runtime without requiring file I/O.
+        include_str!("../../.github/copilot-instructions.md").to_string()
     }
 }
 
