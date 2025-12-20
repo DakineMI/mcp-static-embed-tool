@@ -34,6 +34,7 @@
 //! }
 //! ```
 
+#[cfg(feature = "mcp")]
 use rmcp::{
     ErrorData as McpError,
     model::{CallToolResult, Content, Tool, ListToolsResult},
@@ -481,7 +482,7 @@ impl EmbeddingService {
     }
 }
 
-// TODO: Fix ServerHandler trait implementation - disabled for now
+#[cfg(feature = "mcp")]
 impl ServerHandler for EmbeddingService {
     async fn list_tools(&self, _pagination: Option<rmcp::model::PaginatedRequestParam>, _context: RequestContext<RoleServer>) -> Result<ListToolsResult, McpError> {
         let tools = vec![

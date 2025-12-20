@@ -44,6 +44,7 @@ use anyhow::{anyhow, Result as AnyhowResult};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::fs;
+#[cfg(any(windows, not(any(unix, windows))))]
 use sysinfo::{System, Pid};
 
 /// Handle server lifecycle commands.

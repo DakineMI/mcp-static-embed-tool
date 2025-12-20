@@ -54,6 +54,7 @@
 //! ```
 use axum::{Router, routing::get};
 use metrics::{counter, gauge};
+#[cfg(feature = "mcp")]
 use rmcp::transport::{
     StreamableHttpServerConfig,
     streamable_http_server::{session::local::LocalSessionManager, tower::StreamableHttpService},
@@ -81,6 +82,7 @@ use crate::server::api_keys::{
 use crate::server::http::health;
 use crate::server::limit::{ApiKeyRateLimiter, api_key_rate_limit_middleware};
 use crate::server::state::AppState;
+#[cfg(feature = "mcp")]
 use crate::tools::EmbeddingService;
 use crate::utils::{format_duration, generate_connection_id};
 use anyhow::{Result as AnyhowResult, anyhow};
@@ -273,11 +275,17 @@ pub async fn start_server(config: ServerConfig) -> AnyhowResult<()> {
     );
     match (config.bind_address.is_some(), config.socket_path.is_some()) {
         // We are running as a STDIO server
+        #[cfg(feature = "mcp")]
         (false, false) => start_stdio_server(config).await,
+        #[cfg(not(feature = "mcp"))]
+        (false, false) => Err(anyhow!("MCP feature not enabled")),
         // We are running as a HTTP server
         (true, false) => start_http_server(config).await,
         // We are running as a Unix socket
+        #[cfg(feature = "mcp")]
         (false, true) => start_unix_server(config).await,
+        #[cfg(not(feature = "mcp"))]
+        (false, true) => Err(anyhow!("MCP feature not enabled")),
         // This should never happen due to CLI argument groups
         (true, true) => Err(anyhow!(
             "Cannot specify both --bind-address and --socket-path"
@@ -343,6 +351,7 @@ async fn create_rustls_config(cert_path: &str, key_path: &str) -> AnyhowResult<R
 /// let config = ServerConfig { /* ... */ };
 /// start_stdio_server(config).await?;
 /// ```
+#[cfg(feature = "mcp")]
 async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
     // Initialize structured logging (stderr only for stdio mode)
     init_logging_and_metrics(false);
@@ -399,6 +408,7 @@ async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
 ///
 /// # Errors
 /// Returns an error on socket bind failure, file I/O error, or connection accept errors.
+#[cfg(feature = "mcp")]
 async fn start_unix_server(config: ServerConfig) -> AnyhowResult<()> {
     // Get the specified socket path
     let socket_path = config

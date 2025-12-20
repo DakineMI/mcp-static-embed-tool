@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+#[cfg(feature = "mcp")]
 use rmcp::model::{Annotated, RawResource, ReadResourceResult, Resource, ResourceContents};
 
 /// Trait for MCP resource providers.

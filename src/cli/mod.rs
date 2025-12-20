@@ -327,6 +327,7 @@ fn validate_models(s: &str) -> Result<(), String> {
 }
 
 /// Validate model name: non-empty
+#[cfg(test)]
 fn validate_model_name(s: &str) -> Result<(), String> {
     if s.trim().is_empty() {
         Err("Model name cannot be empty".to_string())

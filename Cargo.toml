@@ -49,7 +49,7 @@ sha2 = "0.10"
 axum-server = { version = "0.7.2", optional = true, features = ["tls-rustls"] }
 
 [features]
-default = []
+default = ["mcp"]
 tls = ["rustls", "rustls-pemfile", "tokio-rustls", "ring", "axum-server"]
 mcp = ["rmcp"]
 
