@@ -1675,6 +1675,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcp-static-embeded-tool-rs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "axum-extra",
+ "axum-server",
+ "base64 0.22.1",
+ "bincode",
+ "chrono",
+ "clap",
+ "colorized",
+ "crossbeam",
+ "futures",
+ "governor",
+ "http",
+ "jsonwebtoken",
+ "libc",
+ "metrics",
+ "model2vec-rs",
+ "parking_lot 0.12.5",
+ "rand",
+ "rcgen",
+ "reqwest",
+ "ring",
+ "rmcp",
+ "rustls 0.23.35",
+ "rustls-pemfile",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sled",
+ "sysinfo",
+ "tempfile",
+ "thiserror 2.0.17",
+ "tokio",
+ "tokio-rustls 0.25.0",
+ "toml",
+ "tower",
+ "tower-http",
+ "tower_governor",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2921,55 +2970,6 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
-
-[[package]]
-name = "static_embedding_server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "axum-extra",
- "axum-server",
- "base64 0.22.1",
- "bincode",
- "chrono",
- "clap",
- "colorized",
- "crossbeam",
- "futures",
- "governor",
- "http",
- "jsonwebtoken",
- "libc",
- "metrics",
- "model2vec-rs",
- "parking_lot 0.12.5",
- "rand",
- "rcgen",
- "reqwest",
- "ring",
- "rmcp",
- "rustls 0.23.35",
- "rustls-pemfile",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "sled",
- "sysinfo",
- "tempfile",
- "thiserror 2.0.17",
- "tokio",
- "tokio-rustls 0.25.0",
- "toml",
- "tower",
- "tower-http",
- "tower_governor",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "uuid",
-]
 
 [[package]]
 name = "strsim"
