@@ -1,5 +1,5 @@
 [package]
-name = "mcp-static-embeded-tool-rs"
+name = "static_embedding_server"
 version = "0.1.0"
 edition = "2024"
 
