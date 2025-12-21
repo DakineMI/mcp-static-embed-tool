@@ -778,7 +778,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_api_router() {
-        let router = create_api_router();
+        let _router = create_api_router();
 
         // The router should have the expected routes
         // We can't easily test the exact routes without more complex setup,

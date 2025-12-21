@@ -444,7 +444,6 @@ fn pid_file_path() -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::Path;
 
     #[tokio::test]
     async fn test_validate_models_in_start_args() {

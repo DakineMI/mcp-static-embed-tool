@@ -358,7 +358,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_distill_with_custom_path() {
-        use std::path::PathBuf;
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().unwrap();

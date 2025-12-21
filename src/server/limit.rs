@@ -247,7 +247,7 @@ pub async fn api_key_rate_limit_middleware(
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::{Request, HeaderMap, HeaderValue, StatusCode};
+    use axum::http::{Request, StatusCode};
     use axum::routing::get;
     use axum::Router;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};

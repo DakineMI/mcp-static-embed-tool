@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_create_registration_router_enabled() {
-        let router = create_registration_router(true);
+        let _router = create_registration_router(true);
         // The router should have the /api/register route when enabled
         // Note: We can't easily test the exact routes without axum-test, 
         // but we can verify the function doesn't panic and returns a Router
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_create_registration_router_disabled() {
-        let router = create_registration_router(false);
+        let _router = create_registration_router(false);
         // The router should be empty when disabled
         assert!(true); // Function executed without panic
     }

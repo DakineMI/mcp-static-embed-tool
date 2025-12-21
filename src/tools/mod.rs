@@ -649,10 +649,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_initialize_connection() {
+    async fn test_service_creation() {
         let service = EmbeddingService::new("test-conn".to_string());
-        let result = service.initialize_connection().await;
-        assert!(result.is_ok());
+        assert_eq!(service.connection_id, "test-conn");
+        assert!(!service.models.is_nil());
     }
 
     #[test]

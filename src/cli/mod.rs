@@ -726,7 +726,6 @@ mod tests {
 
     #[test]
     fn test_server_action_from_arg_matches() {
-        use clap::ArgMatches;
         
         // Test invalid subcommand
         let matches = Command::new("test").get_matches_from(vec!["test"]);
@@ -1009,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_cli_version() {
-        let cli = Cli::parse_from(vec!["embed-tool", "--version"]);
+        let _cli = Cli::parse_from(vec!["embed-tool", "--version"]);
         // If this test runs, it means the version parsing works
         // The actual version display is handled by clap
     }

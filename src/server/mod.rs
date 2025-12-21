@@ -414,7 +414,6 @@ mod tests {
 
 #[cfg(test)]
 pub mod test_utils {
-    use super::*;
     use crate::server::api_keys::{
         ApiKeyManager, create_api_key_management_router, create_registration_router,
     };
