@@ -352,9 +352,19 @@ fn is_process_running(pid: u32) -> bool {
 async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
     // This is a simplified implementation
     // In practice, you'd want to check netstat or similar
-    let output = Command::new("lsof")
+    let output_result = Command::new("lsof")
         .args(&["-t", &format!("-i:{}", port)])
-        .output()?;
+        .output();
+
+    let output = match output_result {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // lsof not installed (common in minimal containers)
+            // Assuming not running is safe for container startup
+            return Ok(None);
+        }
+        Err(e) => return Err(e.into()),
+    };
 
     println!("lsof output status: {}", output.status);
     println!("lsof stdout: {:?}", String::from_utf8_lossy(&output.stdout));
