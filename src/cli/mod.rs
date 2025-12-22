@@ -469,10 +469,12 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     if cli.verbose {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::stderr)
             .init();
     } else {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
+            .with_writer(std::io::stderr)
             .init();
     }
     
