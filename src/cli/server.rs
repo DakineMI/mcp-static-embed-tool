@@ -126,21 +126,21 @@ async fn handle_start_server(
 }
 
 async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
-    println!("Starting embedding server in foreground mode...");
-    println!("Port: {}", args.port);
-    println!("Bind: {}", args.bind);
-    println!("Default model: {}", args.default_model);
+    eprintln!("Starting embedding server in foreground mode...");
+    eprintln!("Port: {}", args.port);
+    eprintln!("Bind: {}", args.bind);
+    eprintln!("Default model: {}", args.default_model);
     
     if let Some(models) = &args.models {
-        println!("Models: {}", models);
+        eprintln!("Models: {}", models);
     }
     
     if args.mcp {
-        println!("MCP mode: enabled");
+        eprintln!("MCP mode: enabled");
     }
 
     if args.auth_disabled {
-        println!("Authentication: disabled");
+        eprintln!("Authentication: disabled");
     }
 
     let config = if args.mcp {
@@ -193,7 +193,7 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
 }
 
 async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
-    println!("Starting embedding server as daemon...");
+    eprintln!("Starting embedding server as daemon...");
     
     let current_exe = std::env::current_exe()?;
     let pid_file = args
@@ -237,8 +237,8 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     // Write PID file
     fs::write(&pid_file, child.id().to_string())?;
     
-    println!("Server started as daemon with PID: {}", child.id());
-    println!("PID file: {}", pid_file.display());
+    eprintln!("Server started as daemon with PID: {}", child.id());
+    eprintln!("PID file: {}", pid_file.display());
     
     Ok(())
 }
@@ -250,9 +250,9 @@ async fn stop_server() -> AnyhowResult<()> {
         // Try to find by port
         if let Some(pid) = find_server_by_port(8080).await? {
             terminate_process(pid)?;
-            println!("Server stopped (found by port)");
+            eprintln!("Server stopped (found by port)");
         } else {
-            println!("No running server found");
+            eprintln!("No running server found");
         }
         return Ok(());
     }
@@ -263,7 +263,7 @@ async fn stop_server() -> AnyhowResult<()> {
     terminate_process(pid)?;
     fs::remove_file(&pid_file)?;
     
-    println!("Server stopped (PID: {})", pid);
+    eprintln!("Server stopped (PID: {})", pid);
     Ok(())
 }
 
@@ -274,23 +274,23 @@ async fn show_status() -> AnyhowResult<()> {
         let pid_str = fs::read_to_string(&pid_file)?;
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
             if is_process_running(pid) {
-                println!("Server is running (PID: {})", pid);
-                println!("PID file: {}", pid_file.display());
+                eprintln!("Server is running (PID: {})", pid);
+                eprintln!("PID file: {}", pid_file.display());
                 
                 // Try to get more info by checking port
                 if let Some(_) = find_server_by_port(8080).await? {
-                    println!("HTTP API: http://localhost:8080");
+                    eprintln!("HTTP API: http://localhost:8080");
                 }
             } else {
-                println!("Server is not running (stale PID file)");
+                eprintln!("Server is not running (stale PID file)");
                 fs::remove_file(&pid_file)?;
             }
         }
     } else if let Some(pid) = find_server_by_port(8080).await? {
-        println!("Server is running (PID: {}) but no PID file found", pid);
-        println!("HTTP API: http://localhost:8080");
+        eprintln!("Server is running (PID: {}) but no PID file found", pid);
+        eprintln!("HTTP API: http://localhost:8080");
     } else {
-        println!("Server is not running");
+        eprintln!("Server is not running");
     }
     
     Ok(())
@@ -366,9 +366,9 @@ async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
         Err(e) => return Err(e.into()),
     };
 
-    println!("lsof output status: {}", output.status);
-    println!("lsof stdout: {:?}", String::from_utf8_lossy(&output.stdout));
-    println!("lsof stderr: {:?}", String::from_utf8_lossy(&output.stderr));
+    eprintln!("lsof output status: {}", output.status);
+    eprintln!("lsof stdout: {:?}", String::from_utf8_lossy(&output.stdout));
+    eprintln!("lsof stderr: {:?}", String::from_utf8_lossy(&output.stderr));
 
     if output.status.success() && !output.stdout.is_empty() {
         let pid_str = String::from_utf8(output.stdout)?;
@@ -575,7 +575,7 @@ mod tests {
         let result = find_server_by_port(65530).await;
         assert!(result.is_ok());
         let server_pid = result.unwrap();
-        println!("Server PID found: {:?}", server_pid);
+        eprintln!("Server PID found: {:?}", server_pid);
         assert!(server_pid.is_none());
     }
 
@@ -1022,7 +1022,7 @@ mod tests {
         assert!(result.is_ok());
         let found_pid = result.unwrap();
         // Result depends on system state, but should not panic
-        println!("Found PID on port 1: {:?}", found_pid);
+        eprintln!("Found PID on port 1: {:?}", found_pid);
     }
 
     #[tokio::test]
