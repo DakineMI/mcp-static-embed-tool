@@ -4,32 +4,25 @@
 //! for consistent error handling across the server.
 //!
 //! ## Error Categories
-//!
+//! 
 //! - **Model Errors**: Model loading and operation failures
-//! - **Authentication Errors**: API key validation and authentication
 //! - **Request Errors**: Invalid input or unsupported operations
-//! - **Server Errors**: Database, TLS, and startup failures
-//! - **Rate Limiting**: Request throttling errors
-//!
+//! - **Server Errors**: Database and startup failures
+//! 
 //! ## Error Types
-//!
+//! 
 //! Each error variant maps to an OpenAI-compatible error type (e.g.,
-//! "invalid_request_error", "authentication_error") for API consistency.
-//!
+//! "invalid_request_error", "server_error") for API consistency.
+//! 
 //! ## Examples
-//!
+//! 
 //! ```
 //! use static_embedding_tool::server::errors::AppError;
-//!
+//! 
 //! // Model loading error
 //! let err = AppError::ModelLoad("potion-32M".to_string(), "file not found".to_string());
 //! assert_eq!(err.error_type(), "model_load_error");
-//!
-//! // Authentication error
-//! let err = AppError::AuthFailed;
-//! assert_eq!(err.error_type(), "authentication_error");
 //! ```
-
 use thiserror::Error;
 
 /// Application-level errors with structured error types.
@@ -43,22 +36,6 @@ pub enum AppError {
     #[error("No models available")]
     NoModelsAvailable,
 
-    /// API key authentication failed.
-    #[error("Authentication failed")]
-    AuthFailed,
-
-    /// API key does not match expected format.
-    #[error("Invalid API key format")]
-    InvalidApiKeyFormat,
-
-    /// API key not found in database.
-    #[error("API key not found")]
-    ApiKeyNotFound,
-
-    /// Failed to revoke API key.
-    #[error("API key revocation failed for key '{0}'")]
-    ApiKeyRevocationFailed(String),
-
     /// Request contains invalid input data.
     #[error("Invalid input: {0}")]
     InvalidInput(String),
@@ -66,10 +43,6 @@ pub enum AppError {
     /// Database operation failed.
     #[error("Database error: {0}")]
     DatabaseError(String),
-
-    /// TLS certificate/key loading or configuration failed.
-    #[error("TLS configuration error: {0}")]
-    TlsConfigError(String),
 
     /// Server failed to start due to port conflict or other issue.
     #[error("Server startup error: {0}")]
@@ -97,11 +70,6 @@ impl AppError {
             AppError::InvalidInput(_) => "invalid_request_error",
             AppError::DatabaseError(_) => "server_error",
             AppError::StartupError(_) => "server_error",
-            AppError::AuthFailed => "authentication_error",
-            AppError::InvalidApiKeyFormat => "authentication_error",
-            AppError::ApiKeyNotFound => "authentication_error",
-            AppError::ApiKeyRevocationFailed(_) => "server_error",
-            AppError::TlsConfigError(_) => "server_error",
         }
     }
 

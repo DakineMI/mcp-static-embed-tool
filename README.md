@@ -65,55 +65,6 @@ docker run --rm -p 8080:8080 -v $(pwd)/config.toml:/app/config.toml static-embed
 
 ### CLI Usage
 
-#### Enabling HTTPS/TLS
-
-To enable HTTPS support, provide TLS certificate and key files:
-
-```bash
-embed-tool server start \
-  --port 443 \
-  --tls-cert-path /path/to/cert.pem \
-  --tls-key-path /path/to/key.pem \
-  --models potion-32M
-```
-
-The server will automatically use HTTPS when both `--tls-cert-path` and `--tls-key-path` are specified. Use port 443 for standard HTTPS operation.
-
-**Certificate Requirements:**
-- PEM format certificate chain (including full chain to root CA)
-- PKCS#8 private key in PEM format
-- Self-signed certificates work for testing
-
-**Example with self-signed cert:**
-
-```bash
-# Generate self-signed cert (for testing only)
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout key.pem -out cert.pem -subj "/CN=localhost"
-
-# Start HTTPS server
-embed-tool server start --port 443 --tls-cert-path cert.pem --tls-key-path key.pem
-```
-
-**Configuration File:**
-
-```toml
-[server]
-port = 443
-host = "0.0.0.0"
-tls_cert_path = "/etc/ssl/certs/server.crt"
-tls_key_path = "/etc/ssl/private/server.key"
-```
-
-> ⚠️ TLS note: TLS is optional and not required for the core local development experience of this static embedding tool. By default, TLS support depends on the `rustls` crate and a cryptography provider (e.g., `ring` or `aws-lc-rs`) chosen at build time. If you plan to enable HTTPS in development or CI, build with a provider feature enabled in `Cargo.toml`, for example:
->
-> ```toml
-> rustls = { version = "0.23", features = ["ring"] }
-> axum-server = { version = "0.7.2", features = ["tls-rustls"] }
-> ```
->
-> Alternatively, run TLS-specific tests manually and skip them during normal development (they are optional and ignored by default).
-
 The embedding server is managed entirely through the CLI interface:
 
 ```bash
@@ -146,7 +97,6 @@ Once the server is running, you can use the OpenAI-compatible embeddings endpoin
 ```bash
 curl -X POST http://localhost:8080/v1/embeddings \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_TOKEN" \
   -d '{
     "input": ["Hello, world!", "How are you?"],
     "model": "potion-32M"
@@ -172,10 +122,7 @@ The embedding server uses TOML-based configuration with environment variable ove
 # Set configuration values
 embed-tool config set server.port 8080
 embed-tool config set server.host "0.0.0.0"
-embed-tool config set auth.require_api_key true
-embed-tool config set auth.registration_enabled true
 embed-tool config set models.default "potion-32M"
-embed-tool config set models.available "potion-8M,potion-32M,code-distilled"
 
 # View current configuration
 embed-tool config get
@@ -237,10 +184,7 @@ Configure your AI tool to connect to the embedding server via MCP:
   "mcpServers": {
     "static-embed-tool": {
       "command": "embed-tool",
-      "args": ["server", "start", "--mcp"],
-      "env": {
-        "EMBED_TOOL_AUTH_REQUIRE": "false"
-      }
+      "args": ["server", "start", "--mcp"]
     }
   }
 }
@@ -412,75 +356,7 @@ embed-tool batch input.jsonl --output results.jsonl --model code-distilled
 embed-tool embed "test" --endpoint http://localhost:8080
 ```
 
-## Authentication
-
-All HTTP and MCP endpoints require an API key by default. You can generate keys yourself when
-registration is enabled or issue them manually via the management endpoints.
-
-### Registering a Key
-
-When `auth.registration_enabled = true` (default) you can self-register an API key:
-
-**POST** `/api/register`
-
-**Request:**
-
-```json
-{
-  "client_name": "my-app",
-  "description": "local testing"
-}
-```
-
-**Response:**
-
-```json
-{
-  "api_key": "embed-BASE64",
-  "key_info": {
-    "id": "53c0...",
-    "client_name": "my-app",
-  }
-}
-```
-
-The `api_key` value is only returned once. Store it securely—lost keys must be regenerated.
-
-### Using API Keys
-
-Include the key in the `Authorization` header as either `Bearer <key>` or the raw `embed-…` value:
-
-```bash
-curl -X POST http://localhost:8080/v1/embeddings \
-  -H "Authorization: Bearer embed-XXXX" \
-  -H "Content-Type: application/json" \
-  -d '{"input": ["Hello"], "model": "potion-32M"}'
-```
-
-To disable authentication for local testing, pass `--auth-disabled` when starting the server or set
-`auth.require_api_key = false` in the configuration file.
-
-### Managing Keys
-
-Authenticated operators can manage keys via the following endpoints:
-
-- **GET** `/api/keys` – list registered keys and their metadata
-- **POST** `/api/keys/revoke` – disable a key by ID
-
-These routes require a valid API key and are typically protected behind an internal network.
-
-### Authentication Settings
-
-```bash
-# Require API keys for all requests (default)
-embed-tool config set auth.require_api_key true
-
-# Allow self-service registration
-embed-tool config set auth.registration_enabled true
-
-# Start with auth disabled for local development only
-embed-tool server start --auth-disabled
-```
+## CLI Commands
 
 ## Development
 
@@ -533,12 +409,6 @@ docker run --rm -p 8080:8080 -v $(pwd):/app static-embed-tool:dev
 - Ensure sufficient memory for large models
 - Verify model file integrity: `embed-tool model info <model>`
 - Check disk space for model storage
-
-**Authentication failures:**
-
-- Confirm API key registration is enabled (or generate keys manually)
-- Check Authorization header format (`Bearer embed-...`)
-- Rotate the key if it was revoked or expired
 
 ### Logging
 

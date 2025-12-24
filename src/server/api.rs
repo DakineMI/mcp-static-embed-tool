@@ -4,7 +4,6 @@
 //! - **POST /v1/embeddings**: Generate embeddings from text input
 //! - **GET /v1/models**: List available embedding models
 //! - **GET /health**: Health check endpoint
-//! - **POST /api/register**: API key registration (if enabled)
 //!
 //! All endpoints use OpenAI-compatible request/response formats for easy integration.
 //!
@@ -28,13 +27,11 @@
 //! ```bash
 //! # Generate embeddings
 //! curl -X POST http://localhost:8080/v1/embeddings \
-//!   -H "Authorization: Bearer embed-YOUR-KEY" \
 //!   -H "Content-Type: application/json" \
 //!   -d '{"input":["Hello world"], "model":"potion-32M"}'
 //!
 //! # List models
-//! curl http://localhost:8080/v1/models \
-//!   -H "Authorization: Bearer embed-YOUR-KEY"
+//! curl http://localhost:8080/v1/models
 //! ```
 
 use axum::{
@@ -186,7 +183,6 @@ pub struct ErrorDetails {
 ///
 /// ```bash
 /// curl -X POST http://localhost:8080/v1/embeddings \
-///   -H "Authorization: Bearer embed-YOUR-KEY" \
 ///   -d '{"input":["Hello world"], "model":"potion-32M"}'
 /// ```
 pub async fn embeddings_handler(
@@ -342,8 +338,7 @@ pub async fn embeddings_handler(
 /// # Examples
 ///
 /// ```bash
-/// curl http://localhost:8080/v1/models \
-///   -H "Authorization: Bearer embed-YOUR-KEY"
+/// curl http://localhost:8080/v1/models
 /// ```
 pub async fn models_handler(
     State(state): State<Arc<AppState>>,

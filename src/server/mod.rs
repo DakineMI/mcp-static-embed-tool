@@ -3,7 +3,6 @@
 
 
 pub mod api;
-// pub mod api_keys; // TODO: Implement API key management
 pub mod errors;
 pub mod http;
 pub mod start;
@@ -327,7 +326,7 @@ mod tests {
         use super::test_utils::spawn_test_server;
         use reqwest::Client;
 
-        let (addr, handle) = spawn_test_server(false).await;
+        let (addr, handle) = spawn_test_server().await;
 
         let client = Client::new();
         let resp = client.get(format!("{}/health", addr)).send().await.unwrap();
@@ -343,7 +342,7 @@ mod tests {
         use reqwest::Client;
         use serde_json::json;
 
-        let (addr, handle) = spawn_test_server(false).await;
+        let (addr, handle) = spawn_test_server().await;
 
         let client = Client::new();
         let url = format!("{}/v1/embeddings", addr);
@@ -371,7 +370,7 @@ pub mod test_utils {
     use tracing::{debug, info};
     use uuid::Uuid;
 
-    pub async fn spawn_test_server(_auth_enabled: bool) -> (String, JoinHandle<()>) {
+    pub async fn spawn_test_server() -> (String, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("Failed to bind test listener");

@@ -181,10 +181,6 @@ pub struct StartArgs {
     #[arg(long)]
     pub mcp: bool,
     
-    /// Disable authentication
-    #[arg(long)]
-    pub auth_disabled: bool,
-    
     /// Run as daemon (detached process)
     #[arg(long)]
     pub daemon: bool,
@@ -192,14 +188,6 @@ pub struct StartArgs {
     /// PID file location for daemon mode
     #[arg(long = "pid-file")]
     pub pid_file: Option<PathBuf>,
-    
-    /// TLS certificate file path
-    #[arg(long = "tls-cert-path")]
-    pub tls_cert_path: Option<String>,
-
-    /// TLS private key file path
-    #[arg(long = "tls-key-path")]
-    pub tls_key_path: Option<String>,
 }
 
 impl StartArgs {
@@ -250,12 +238,6 @@ impl StartArgs {
                     .action(ArgAction::SetTrue)
             )
             .arg(
-                Arg::new("auth_disabled")
-                    .long("auth-disabled")
-                    .help("Disable authentication")
-                    .action(ArgAction::SetTrue)
-            )
-            .arg(
                 Arg::new("daemon")
                     .long("daemon")
                     .help("Run as daemon (detached process)")
@@ -265,19 +247,7 @@ impl StartArgs {
                 Arg::new("pid_file")
                     .long("pid-file")
                     .help("PID file location for daemon mode")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-            )
-            .arg(
-                Arg::new("tls_cert_path")
-                    .long("tls-cert-path")
-                    .help("TLS certificate file path")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
-            )
-            .arg(
-                Arg::new("tls_key_path")
-                    .long("tls-key-path")
-                    .help("TLS private key file path")
-                    .value_parser(clap::builder::NonEmptyStringValueParser::new())
+                    .value_parser(clap::value_parser!(PathBuf))
             )
     }
 
@@ -298,13 +268,10 @@ impl StartArgs {
             bind: get_str(matches, "bind").unwrap_or_else(|| "0.0.0.0".to_string()),
             socket_path: get_str(matches, "socket_path").map(PathBuf::from),
             models: get_str(matches, "models"),
-            default_model: get_str(matches, "default_model").unwrap_or_else(|| "potion-32M".to_string()),
+            default_model: matches.get_one::<String>("default_model").cloned().unwrap_or_else(|| "potion-32M".to_string()),
             mcp: matches.get_flag("mcp"),
-            auth_disabled: matches.get_flag("auth_disabled"),
             daemon: matches.get_flag("daemon"),
-            pid_file: get_str(matches, "pid_file").map(PathBuf::from),
-            tls_cert_path: get_str(matches, "tls_cert_path"),
-            tls_key_path: get_str(matches, "tls_key_path"),
+            pid_file: matches.get_one::<PathBuf>("pid_file").cloned(),
         })
     }
 }
@@ -419,7 +386,7 @@ pub enum ConfigAction {
 
 #[derive(Args)]
 pub struct SetConfigArgs {
-    /// Configuration key (e.g., auth.require_api_key)
+    /// Configuration key (e.g., server.default_port)
     pub key: String,
     
     /// Configuration value
@@ -541,13 +508,10 @@ mod tests {
             Commands::Server { action } => {
                 match action {
                     ServerAction::Start(args) => {
-                        assert_eq!(args.port, 9090);
-                        assert_eq!(args.bind, "127.0.0.1");
-                        assert_eq!(args.default_model, "potion-32M");
-                        assert!(!args.mcp);
-                        assert!(!args.auth_disabled);
-                        assert!(!args.daemon);
-                    }
+        assert_eq!(args.port, 8080);
+        assert!(!args.mcp);
+        assert!(!args.daemon);
+    }
                     _ => panic!("Expected Start action"),
                 }
             }
@@ -569,8 +533,7 @@ mod tests {
             "model1,model2,model3",
             "--default-model",
             "model2",
-            "--mcp",
-            "--auth-disabled"
+            "--mcp"
         ];
         let cli = Cli::try_parse_from(args).unwrap();
 
@@ -583,7 +546,6 @@ mod tests {
                         assert_eq!(args.models, Some("model1,model2,model3".to_string()));
                         assert_eq!(args.default_model, "model2");
                         assert!(args.mcp);
-                        assert!(args.auth_disabled);
                     }
                     _ => panic!("Expected Start action"),
                 }
@@ -749,7 +711,6 @@ mod tests {
         assert!(args.contains(&"models"));
         assert!(args.contains(&"default_model"));
         assert!(args.contains(&"mcp"));
-        assert!(args.contains(&"auth_disabled"));
         assert!(args.contains(&"daemon"));
     }
 
@@ -882,12 +843,12 @@ mod tests {
     #[test]
     fn test_set_config_args_creation() {
         let set_config_args = SetConfigArgs {
-            key: "auth.require_api_key".to_string(),
-            value: "true".to_string(),
+            key: "server.port".to_string(),
+            value: "9090".to_string(),
         };
         
-        assert_eq!(set_config_args.key, "auth.require_api_key");
-        assert_eq!(set_config_args.value, "true");
+        assert_eq!(set_config_args.key, "server.port");
+        assert_eq!(set_config_args.value, "9090");
     }
 
     #[test]
@@ -982,11 +943,8 @@ mod tests {
             models: None,
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: false,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         match ServerAction::Start(start_args.clone()) {
@@ -1035,7 +993,6 @@ mod tests {
             Commands::Server { action: ServerAction::Start(args) } => {
                 assert_eq!(args.default_model, "potion-32M"); // Default value
                 assert!(!args.mcp); // Default false
-                assert!(!args.auth_disabled); // Default false
                 assert!(!args.daemon); // Default false
                 assert_eq!(args.socket_path, None); // Default None
                 assert_eq!(args.models, None); // Default None
@@ -1146,24 +1103,6 @@ mod tests {
                     assert_eq!(start_args.port, 8888);
                 }
                 _ => panic!("Expected Server::Restart"),
-            }
-        }
-
-        #[test]
-        fn test_start_args_with_tls() {
-            let args = vec![
-                "embed-tool", "server", "start",
-                "--tls-cert-path", "/path/to/cert.pem",
-                "--tls-key-path", "/path/to/key.pem",
-            ];
-            let cli = Cli::try_parse_from(args).unwrap();
-        
-            match cli.command {
-                Commands::Server { action: ServerAction::Start(start_args) } => {
-                    assert_eq!(start_args.tls_cert_path, Some("/path/to/cert.pem".to_string()));
-                    assert_eq!(start_args.tls_key_path, Some("/path/to/key.pem".to_string()));
-                }
-                _ => panic!("Expected Server::Start"),
             }
         }
 

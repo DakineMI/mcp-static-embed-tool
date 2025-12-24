@@ -14,8 +14,7 @@
 //!
 //! ## Configuration Sections
 //!
-//! - **Server**: Port, bind address, default model, MCP settings, TLS
-//! - **Auth**: API key requirements, registration settings
+//! - **Server**: Port, bind address, default model
 //! - **Models**: Model paths, cache directory, auto-download settings
 //! - **Logging**: Log levels, output format, file rotation
 //!
@@ -41,7 +40,6 @@
 //! `EMBED_TOOL_` and uppercase section.key format:
 //!
 //! - `EMBED_TOOL_SERVER_PORT=9090`
-//! - `EMBED_TOOL_AUTH_REQUIRE_API_KEY=true`
 //! - `EMBED_TOOL_MODELS_CACHE_DIR=/custom/path`
 
 use crate::cli::{BatchArgs, ConfigAction, EmbedArgs, SetConfigArgs};
@@ -389,7 +387,7 @@ async fn set_config(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(config_path.clone()).unwrap_or_default();
 
-    // Parse the key path (e.g., "server.default_port" or "auth.require_api_key")
+    // Parse the key path (e.g., "server.default_port" or "models.auto_download")
     let parts: Vec<&str> = args.key.split('.').collect();
     let value = args.value.clone(); // Clone to avoid move issues
 
@@ -742,12 +740,6 @@ mod tests {
 default_port = 9999
 default_bind = "127.0.0.1"
 default_model = "potion-32M"
-
-[auth]
-require_api_key = true
-registration_enabled = true
-api_key_header = "X-API-Key"
-api_key_prefix = "Bearer "
 
 [models]
 auto_download = true

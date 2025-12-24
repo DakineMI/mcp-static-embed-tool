@@ -160,9 +160,6 @@ async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
     // Create a session manager for the HTTP server
     let session_manager = Arc::new(LocalSessionManager::default());
 
-    // Initialize API key manager with persistent storage
-    // let api_key_manager = Arc::new(ApiKeyManager::new(&api_key_db_path)?);
-
     // Create shared app state with loaded models
     let app_state = Arc::new(
         AppState::new()
@@ -336,33 +333,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_http_server_with_auth_disabled() {
-        let temp_dir = TempDir::new().unwrap();
-        let _db_path = temp_dir
-            .path()
-            .join("test.db")
-            .to_str()
-            .unwrap()
-            .to_string();
-
-        let mut config = default_test_config();
-        config.bind_address = Some("127.0.0.1:0".to_string());
-
-        // This test would require actually starting a server and testing it
-        // For now, we'll just test that the configuration is valid
-        // The actual server start would require mocking more dependencies
-    }
-
-    #[tokio::test]
-    async fn test_spawn_test_server_auth_disabled() {
-        let (addr, handle) = spawn_test_server(false).await;
-
-        // Verify server address format
-        assert!(addr.starts_with("http://127.0.0.1:"));
-
-        // Stop the server
-        handle.abort();
-    }
+    async fn test_spawn_test_server_health() {
 
     #[tokio::test]
     async fn test_start_http_server_successful_startup() {

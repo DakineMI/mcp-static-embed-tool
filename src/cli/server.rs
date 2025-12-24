@@ -1,42 +1,4 @@
-//! Server lifecycle management commands.
-//!
-//! This module implements the `server` subcommand which provides full lifecycle control
-//! over the embedding server, including start, stop, status, and restart operations.
-//!
-//! ## Features
-//!
-//! - **HTTP Server**: Binds to TCP address with configurable port and host
-//! - **Unix Socket**: Alternative IPC communication for local connections
-//! - **Daemon Mode**: Background process with PID file management
-//! - **Single Instance**: PID file prevents multiple server instances
-//! - **Graceful Shutdown**: Proper cleanup on stop/restart
-//!
-//! ## Server Lifecycle
-//!
-//! ```text
-//! start → running → stop
-//!   ↓                ↑
-//!   └── restart ─────┘
-//! ```
-//!
-//! ## Examples
-//!
-//! ```bash
-//! # Start server with defaults (port 8080, bind 0.0.0.0)
-//! embed-tool server start
-//!
-//! # Start with custom configuration
-//! embed-tool server start --port 9090 --bind 127.0.0.1 --models model1,model2
-//!
-//! # Start as daemon with TLS
-//! embed-tool server start --daemon --tls-cert-path cert.pem --tls-key-path key.pem
-//!
-//! # Check server status
-//! embed-tool server status
-//!
-//! # Graceful restart
-//! embed-tool server restart
-//! ```
+
 
 use crate::cli::{ServerAction, StartArgs};
 use crate::server::start::{start_server, ServerConfig};
@@ -137,10 +99,6 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
     
     if args.mcp {
         eprintln!("MCP mode: enabled");
-    }
-
-    if args.auth_disabled {
-        eprintln!("Authentication: disabled");
     }
 
     let config = if args.mcp {
@@ -450,11 +408,8 @@ mod tests {
             models: Some("model1,model2".to_string()),
             default_model: "model1".to_string(),
             mcp: false,
-            auth_disabled: false,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // This should succeed
@@ -470,11 +425,8 @@ mod tests {
             models: Some("model1,model2".to_string()),
             default_model: "model3".to_string(), // Not in models list
             mcp: false,
-            auth_disabled: false,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         let result = handle_start_server(args, None).await;
@@ -491,11 +443,8 @@ mod tests {
             models: Some(",,,,".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: false,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         let result = handle_start_server(args, None).await;
@@ -580,11 +529,8 @@ mod tests {
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: true,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // This will likely fail to start the actual server, but should not panic
@@ -604,12 +550,8 @@ mod tests {
             socket_path: None,
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
-            mcp: false,
-            auth_disabled: true,
             daemon: true, // Use daemon mode to avoid hanging
             pid_file: Some(pid_file.clone()),
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // Test restart command - should handle non-existent server gracefully
@@ -632,12 +574,7 @@ mod tests {
             socket_path: None,
             models: None, // No models specified
             default_model: "potion-32M".to_string(),
-            mcp: false,
-            auth_disabled: false,
-            daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // Should succeed when no models are specified
@@ -653,11 +590,8 @@ mod tests {
             models: Some("  model1  ,  model2  ".to_string()),
             default_model: "model1".to_string(),
             mcp: false,
-            auth_disabled: false,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // Should handle whitespace properly
@@ -673,11 +607,8 @@ mod tests {
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: true,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // Spawn server in background with timeout to prevent hanging
@@ -702,11 +633,8 @@ mod tests {
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: true, // MCP mode
-            auth_disabled: true,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // Spawn server in background with timeout to prevent hanging
@@ -734,11 +662,8 @@ mod tests {
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: true,
             daemon: false,
             pid_file: None,
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // Spawn server in background with timeout to prevent hanging
@@ -760,33 +685,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_start_foreground_with_tls() {
-        let args = StartArgs {
-            port: 8443,
-            bind: "127.0.0.1".to_string(),
-            socket_path: None,
-            models: Some("potion-32M".to_string()),
-            default_model: "potion-32M".to_string(),
-            mcp: false,
-            auth_disabled: true,
-            daemon: false,
-            pid_file: None,
-            tls_cert_path: Some("/path/to/cert.pem".to_string()),
-            tls_key_path: Some("/path/to/key.pem".to_string()),
-        };
-
-        // This should fail quickly due to missing TLS certs
-        // Wrap in timeout just in case
-        let result = tokio::time::timeout(
-            tokio::time::Duration::from_secs(1),
-            start_foreground(args)
-        ).await;
-        
-        // Should either timeout or return error for missing certs
-        assert!(result.is_err() || result.unwrap().is_err());
-    }
-
-    #[tokio::test]
     async fn test_start_daemon_basic() {
         let temp_dir = tempfile::tempdir().unwrap();
         let pid_file = temp_dir.path().join("test_daemon.pid");
@@ -798,11 +696,8 @@ mod tests {
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: true,
             daemon: true,
             pid_file: Some(pid_file.clone()),
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         // This will try to spawn a daemon process
@@ -829,11 +724,8 @@ mod tests {
             models: Some("potion-32M,custom-model".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: true,
-            auth_disabled: false,
             daemon: true,
             pid_file: Some(pid_file.clone()),
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         let result = start_daemon(args).await;
@@ -855,11 +747,8 @@ mod tests {
             models: None,
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: true,
             daemon: true,
             pid_file: None, // Use default PID file location
-            tls_cert_path: None,
-            tls_key_path: None,
         };
 
         let result = start_daemon(args).await;
@@ -1048,11 +937,8 @@ mod tests {
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
             mcp: false,
-            auth_disabled: true,
             daemon: false,
             pid_file: Some(pid_file.clone()),
-            tls_cert_path: None,
-            tls_key_path: None,
         };
         
         let result = handle_start_server(args, None).await;
