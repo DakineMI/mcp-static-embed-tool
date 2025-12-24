@@ -20,6 +20,7 @@ This is a **static embedding server** built with Rust, providing HTTP API and MC
 - **`src/server/state.rs`** - `AppState` with `HashMap<String, StaticModel>` for multi-model support
 - **`src/server/mod.rs`** - Axum handlers with OpenAI-compatible `/v1/embeddings` endpoint
 - **`src/utils/mod.rs`** - Model distillation via external Python `model2vec` CLI calls
+- **`src/logs.rs`** - Initialization of structured logging and metrics collection.
 
 ### Key Implementation Patterns
 
@@ -80,7 +81,7 @@ embed-tool embed "Hello world" --model potion-32M  # Quick test
 curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'
 
 # Get embeddings
-curl -X POST http://localhost:8080/v1/embeddings \
+curl -X POST http://localhost.8080/v1/embeddings \
   -H "Authorization: Bearer embed-YOUR-API-KEY" \
   -d '{"input":["Hello world"],"model":"potion-32M"}'
 ```
@@ -90,7 +91,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Configuration**: TOML files with environment variable overrides (e.g., `EMBED_TOOL_SERVER_PORT`)
 - **Authentication**: API key system with `/api/register` endpoint for self-service key generation
 - **Rate Limiting**: IP-based with configurable RPS/burst via `tower_governor`
-- **Logging**: Structured logs with `tracing` spans and context
+- **Logging**: Structured logs with `tracing` spans and context. Initialize using `init_logging_and_metrics(stdio: bool)` where `stdio` indicates if the server is running in MCP STDIO mode. Use environment variable `RUST_LOG` to control log level filtering.
 - **Single Instance**: PID file management ensures only one server runs
 - **Model Loading**: Graceful fallback - continue if custom models fail, default to `potion-32M`
 - **MCP Integration**: Resource providers in `src/resources/`, tools in `src/tools/`
@@ -122,12 +123,20 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Unresolved import `governor::state::direct::DefaultDirectStateStore`**: This is due to changes in the `governor` crate. Remove the unresolved `DefaultDirectStateStore` import and use `DirectStateStore` consistently for direct state stores.
 - **Unused imports: `ApiError` and `ErrorDetails`**: Remove the whole `use` item.
 - **Unused import `crate::server::errors::AppError`**: Remove the unused import statement.
+- **When encountering `failed to resolve: use of unresolved module or unlinked crate \`rand\``, add the `rand` crate to `Cargo.toml` using `cargo add rand`.**
+- **When encountering `unresolved import EnvFilter`, add `tracing-subscriber = { version = "0.3", features = ["env-filter"] }` to `Cargo.toml` using `cargo add tracing-subscriber --features env-filter`.**
+- **`embedtool`: Unknown word**: This appears to be a linter error, not a compilation error, and can be ignored, or addressed by adding the word to the linter's dictionary.
+- **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
+- **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
+- **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn StdError>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
 
 **Key Log Messages**:
 
 - `"✓ Loaded potion-32M model"` - Successful model loading
 - `"⚠️ File exists, saving as: model_v2"` - Auto-versioning in action
 - `"Starting MCP server in HTTP mode with rate limiting"` - Server startup
+- `"Logging and tracing initialized"` - Logging and tracing successfully initialized.
+- `"Metrics collection initialized"` - Metrics collection successfully initialized.
 
 **Take Ownership Of Tool Issues**: Always assume you are at fault first. Review your steps carefully before blaming tools or code. Absence of evidence is not evidence of absence.
 
@@ -171,6 +180,7 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - ✅ **CLI**: Working server lifecycle management (`server start`, `server stop`, etc.)
 - ✅ **Model Management**: Multi-model support with graceful fallbacks
 - ✅ **Authentication**: API key system for secure access
+- ✅ **Logging**: Structured logging with `tracing` spans and context
 - ⚠️ **TLS support** temporarily disabled (needs rustls/axum API update)
 - ⚠️ **Rate limiting** temporarily disabled (needs tower_governor compatibility fix)
 - ⚠️ **MCP tools** partially disabled (needs rmcp crate API alignment)
@@ -192,12 +202,13 @@ curl -X POST http://localhost:8080/v1/embeddings \
 - **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
 - **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
 - **`E0614: type `std::option::Option<&mut HeaderMap>` cannot be dereferenced`**: In `src/server/limit.rs`, the line `*req.headers_mut() = headers;` is causing a compilation error because `req.headers_mut()` returns an `Option<&mut HeaderMap>`, and you cannot directly dereference and assign to it.
+- **When encountering an unused assignment to `router` before it's reassigned, chain the router methods directly on `Router::new()` for cleaner, immutable code.**
 
 ## AI CODING AGENT GUIDELINES
 
 To ensure AI coding agents are immediately productive, consider the following:
 
-- **Big Picture Architecture:** The server is designed around serving embeddings via HTTP API and MCP. The core components include `src/main.rs` (CLI entrypoint), `src/cli/` (CLI implementation), `src/server/mod.rs` (HTTP server), `src/server/api_keys.rs` (API key management), and `src/utils/mod.rs` (model distillation). Understand how these components interact to provide embedding services.
+- **Big Picture Architecture:** The server is designed around serving embeddings via HTTP API and MCP. The core components include `src/main.rs` (CLI entrypoint), `src/cli/` (CLI implementation), `src/server/mod.rs` (HTTP server), `src/server/api_keys.rs` (API key management), and `src/utils/mod.rs` (model distillation), and `src/logs.rs` (logging and metrics). Understand how these components interact to provide embedding services.
 - **Critical Developer Workflows:** Use `cargo run` to start the server. API keys can be obtained via `curl -X POST http://localhost:8080/api/register -d '{"name":"my-app"}'`. Embeddings can be generated using `curl -X POST http://localhost:8080/v1/embeddings -H "Authorization: Bearer embed-YOUR-API-KEY" -d '{"input":["Hello world"],"model":"potion-32M}`.
 - **Project-Specific Conventions:** The project adapts proven patterns, including authentication, rate limiting, and CLI design. Pay attention to the single-instance control of the CLI and the TOML configuration files. The project also uses auto-versioning for files, graceful model loading fallbacks, and integrates with an external Python CLI.
 - **Integration Points:** The server integrates with the `model2vec` Python CLI for model distillation. API key authentication is a crucial integration point.
@@ -208,6 +219,7 @@ Key files/directories to examine:
 - `src/server/`: HTTP server and API endpoints
 - `src/utils/`: Model distillation logic
 - `src/resources/`: MCP resource handling
+- `src/logs.rs`: Logging and metrics initialization
 
 **Additional Guidelines for AI Coding Agents**
 
@@ -360,3 +372,7 @@ To fix this, the user can install a provider via code by calling `CryptoProvider
 **Based on the user feedback that TLS is scope creep, the recommended action is to keep TLS disabled for local development and testing. Therefore, the following rule is added:**
 
 **If TLS is not required for local development, avoid enabling TLS features or providers. Mark TLS-related tests as ignored or conditional, and ensure the project can run without TLS dependencies in local environments.**
+
+**When encountering `failed to resolve: use of unresolved module or unlinked crate \`rand\``, add the `rand` crate to `Cargo.toml` using `cargo add rand`.**
+**When encountering `failed to resolve: use of unresolved module or unlinked crate EnvFilter`, add `tracing-subscriber = { version = "0.3", features = ["env-filter"] }` to `Cargo.toml` using `cargo add tracing-subscriber --features env-filter`.**
+**When encountering an unused assignment to `router` before it's reassigned, chain the router methods directly on `Router::new()` for cleaner, immutable code.**

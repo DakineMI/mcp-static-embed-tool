@@ -1,7 +1,7 @@
 use std::sync::Once;
 
 use clap::Parser;
-use static_embedding_server::cli::{self, Cli, Commands, ServerAction};
+use static_embedding_tool::cli::{Cli, Commands, ServerAction};
 
 static INIT: Once = Once::new();
 

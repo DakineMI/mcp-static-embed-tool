@@ -31,7 +31,6 @@ Static Embedding Server is a high-performance Rust-based embedding server that p
 - **OpenAI-compatible API**: `/v1/embeddings` endpoint matching OpenAI embedding API format
 - **Model distillation**: Built-in support for custom model creation via Model2Vec distillation
 - **Single instance control**: PID file-based process management ensuring only one server runs
-- **Rate limiting**: Configurable IP-based request rate limiting with burst control
 - **Health checks**: Built-in health monitoring and status endpoints
 - **Structured logging**: Comprehensive logging and metrics with tracing-subscriber
 - **MCP integration**: Model Context Protocol support for AI assistant integration
@@ -194,18 +193,9 @@ All configuration can be overridden with environment variables:
 export EMBED_TOOL_SERVER_PORT=8080
 export EMBED_TOOL_SERVER_HOST="0.0.0.0"
 
-# Authentication
-export EMBED_TOOL_AUTH_REQUIRE_API_KEY=true
-export EMBED_TOOL_AUTH_REGISTRATION_ENABLED=true
-
 # Models
 export EMBED_TOOL_MODELS_DEFAULT="potion-32M"
 export EMBED_TOOL_MODELS_PATH="/custom/models/path"
-
-# Rate limiting
-export EMBED_TOOL_RATE_LIMIT_RPS=100
-export EMBED_TOOL_RATE_LIMIT_BURST=200
-```
 
 ### Configuration File Format
 
@@ -217,19 +207,10 @@ port = 8080
 host = "0.0.0.0"
 workers = 4
 
-[auth]
-require_api_key = true
-registration_enabled = true
-
 [models]
 default = "potion-32M"
 available = ["potion-8M", "potion-32M", "code-distilled"]
 path = "/opt/models"
-
-[rate_limit]
-rps = 100
-burst = 200
-enabled = true
 
 [logging]
 level = "info"
@@ -459,7 +440,6 @@ When `auth.registration_enabled = true` (default) you can self-register an API k
   "key_info": {
     "id": "53c0...",
     "client_name": "my-app",
-    "rate_limit_tier": "standard"
   }
 }
 ```
@@ -500,20 +480,6 @@ embed-tool config set auth.registration_enabled true
 
 # Start with auth disabled for local development only
 embed-tool server start --auth-disabled
-```
-
-## Rate Limiting
-
-IP-based rate limiting with configurable limits:
-
-```bash
-# Configure rate limits
-embed-tool config set rate_limit.rps 100
-embed-tool config set rate_limit.burst 200
-embed-tool config set rate_limit.enabled true
-
-# Start with custom rate limits
-embed-tool server start --rate-limit-rps 50 --rate-limit-burst 100
 ```
 
 ## Development
@@ -573,12 +539,6 @@ docker run --rm -p 8080:8080 -v $(pwd):/app static-embed-tool:dev
 - Confirm API key registration is enabled (or generate keys manually)
 - Check Authorization header format (`Bearer embed-...`)
 - Rotate the key if it was revoked or expired
-
-**Rate limiting issues:**
-
-- Adjust rate limits: `embed-tool config set rate_limit.rps 200`
-- Monitor request patterns
-- Consider using multiple server instances
 
 ### Logging
 

@@ -44,16 +44,15 @@
 //! - `EMBED_TOOL_AUTH_REQUIRE_API_KEY=true`
 //! - `EMBED_TOOL_MODELS_CACHE_DIR=/custom/path`
 
-use crate::cli::{ConfigAction, SetConfigArgs, EmbedArgs, BatchArgs};
-use std::path::PathBuf;
-use std::fs;
+use crate::cli::{BatchArgs, ConfigAction, EmbedArgs, SetConfigArgs};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::PathBuf;
 
 /// Top-level configuration structure.
 #[derive(Serialize, Deserialize, Default)]
 struct Config {
     server: ServerConfig,
-    auth: AuthConfig,
     models: ModelConfig,
     logging: LoggingConfig,
 }
@@ -64,12 +63,6 @@ struct ServerConfig {
     default_port: u16,
     default_bind: String,
     default_model: String,
-    enable_mcp: bool,
-    rate_limit_rps: u32,
-    rate_limit_burst: u32,
-    enable_tls: bool,
-    tls_cert_path: Option<String>,
-    tls_key_path: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -78,31 +71,6 @@ impl Default for ServerConfig {
             default_port: 8080,
             default_bind: "0.0.0.0".to_string(),
             default_model: "potion-32M".to_string(),
-            enable_mcp: false,
-            rate_limit_rps: 100,
-            rate_limit_burst: 200,
-            enable_tls: false,
-            tls_cert_path: None,
-            tls_key_path: None,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct AuthConfig {
-    require_api_key: bool,
-    registration_enabled: bool,
-    api_key_header: String,
-    api_key_prefix: String,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            require_api_key: true,
-            registration_enabled: true,
-            api_key_header: "Authorization".to_string(),
-            api_key_prefix: "embed-".to_string(),
         }
     }
 }
@@ -151,17 +119,70 @@ pub async fn handle_embed_command(
     args: EmbedArgs,
     _config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("⚠️  Direct embedding not yet implemented - would embed:");
+    use reqwest::Client;
+    use serde_json::{Value, json};
+
+    let client = Client::new();
+    let url = "http://localhost:8080/v1/embeddings";
+
+    let model_name = args.model.as_deref().unwrap_or("potion-32M");
+
+    let request_body = json!({
+        "input": [args.text],
+        "model": model_name,
+        "encoding_format": if args.format == "json" { "float" } else { &args.format }
+    });
+
+    println!("🔍 Embedding text using model '{}'...", model_name);
     println!("  Text: \"{}\"", args.text);
-    let model_name = args.model.as_deref().unwrap_or("default");
-    println!("  Model: {}", model_name);
-    println!("  Format: {}", args.format);
-    println!("\nStart the server first with: embed-tool server start");
-    println!("Then use: curl -X POST http://localhost:8080/v1/embeddings \\");
-    println!("  -H \"Content-Type: application/json\" \\");
-    println!("  -d '{{\"input\": [\"{}\"], \"model\": \"{}\"}}'", 
-             args.text, args.model.as_deref().unwrap_or("potion-32M"));
-    
+
+    match client.post(url).json(&request_body).send().await {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() {
+                let result: Value = response.json().await?;
+                match args.format.as_str() {
+                    "json" => {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    }
+                    "csv" => {
+                        if let Some(data) = result
+                            .get("data")
+                            .and_then(|d| d.as_array())
+                            .and_then(|arr| arr.get(0))
+                        {
+                            if let Some(embedding) =
+                                data.get("embedding").and_then(|e| e.as_array())
+                            {
+                                println!("embedding");
+                                for value in embedding {
+                                    if let Some(num) = value.as_f64() {
+                                        print!("{:.6},", num);
+                                    }
+                                }
+                                println!();
+                            }
+                        }
+                    }
+                    _ => {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    }
+                }
+                println!("✓ Embedding completed successfully");
+            } else {
+                let error_text = response.text().await?;
+                eprintln!("❌ Server error ({}): {}", status, error_text);
+                eprintln!("\nMake sure the server is running:");
+                eprintln!("  embed-tool server start");
+            }
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to connect to server: {}", e);
+            eprintln!("Make sure the server is running on http://localhost:8080");
+            eprintln!("  embed-tool server start");
+        }
+    }
+
     Ok(())
 }
 
@@ -169,65 +190,183 @@ pub async fn handle_batch_command(
     args: BatchArgs,
     _config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("⚠️  Batch embedding not yet implemented - would process:");
+    use reqwest::Client;
+    use serde_json::{Value, json};
+    use std::fs;
+    use std::io::Write;
+
+    // Check if input file exists
+    if !args.input.exists() {
+        eprintln!(
+            "❌ Error: Input file '{}' does not exist",
+            args.input.display()
+        );
+        return Ok(());
+    }
+
+    // Read input file
+    let input_content = fs::read_to_string(&args.input)?;
+    let input_data: Vec<String> = if args.input.extension().and_then(|s| s.to_str()) == Some("json")
+    {
+        serde_json::from_str(&input_content)?
+    } else {
+        // Assume text file with one item per line
+        input_content.lines().map(|s| s.to_string()).collect()
+    };
+
+    if input_data.is_empty() {
+        eprintln!("❌ Error: Input file is empty or contains no valid data");
+        return Ok(());
+    }
+
+    let client = Client::new();
+    let url = "http://localhost:8080/v1/embeddings";
+    let model_name = args.model.as_deref().unwrap_or("potion-32M");
+
+    println!(
+        "🔍 Processing {} texts in batches of {} using model '{}'...",
+        input_data.len(),
+        args.batch_size,
+        model_name
+    );
     println!("  Input: {}", args.input.display());
-    
     if let Some(output) = &args.output {
         println!("  Output: {}", output.display());
     }
-    
-    let model_name = args.model.as_deref().unwrap_or("default");
-    println!("  Model: {}", model_name);
-    println!("  Format: {}", args.format);
-    println!("  Batch size: {}", args.batch_size);
-    
-    // Check if input file exists
-    if !args.input.exists() {
-        eprintln!("Error: Input file '{}' does not exist", args.input.display());
-        return Ok(());
+
+    let mut all_embeddings = Vec::new();
+    let mut processed = 0;
+
+    // Process in batches
+    for chunk in input_data.chunks(args.batch_size) {
+        let request_body = json!({
+            "input": chunk,
+            "model": model_name,
+            "encoding_format": "float"
+        });
+
+        match client.post(url).json(&request_body).send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    let result: Value = response.json().await?;
+                    if let Some(data) = result.get("data").and_then(|d| d.as_array()) {
+                        for item in data {
+                            if let Some(embedding) =
+                                item.get("embedding").and_then(|e| e.as_array())
+                            {
+                                let embedding_vec: Vec<f32> = embedding
+                                    .iter()
+                                    .filter_map(|v| v.as_f64())
+                                    .map(|v| v as f32)
+                                    .collect();
+                                all_embeddings.push(embedding_vec);
+                            }
+                        }
+                        processed += chunk.len();
+                        println!("  ✓ Processed {}/{} texts", processed, input_data.len());
+                    }
+                } else {
+                    let error_text = response.text().await?;
+                    eprintln!("❌ Server error ({}): {}", status, error_text);
+                    eprintln!("\nMake sure the server is running:");
+                    eprintln!("  embed-tool server start");
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to connect to server: {}", e);
+                eprintln!("Make sure the server is running on http://localhost:8080");
+                eprintln!("  embed-tool server start");
+                return Ok(());
+            }
+        }
     }
-    
-    println!("\nStart the server first with: embed-tool server start");
-    println!("Then implement batch processing via the HTTP API");
-    
+
+    // Output results
+    if let Some(output_path) = &args.output {
+        match args.format.as_str() {
+            "json" => {
+                let output_data = json!({
+                    "model": model_name,
+                    "embeddings": all_embeddings,
+                    "input_count": input_data.len(),
+                    "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
+                });
+                fs::write(output_path, serde_json::to_string_pretty(&output_data)?)?;
+            }
+            "csv" => {
+                let mut file = fs::File::create(output_path)?;
+                // Write header
+                writeln!(file, "index,embedding")?;
+                for (i, embedding) in all_embeddings.iter().enumerate() {
+                    write!(file, "{}", i)?;
+                    for value in embedding {
+                        write!(file, ",{:.6}", value)?;
+                    }
+                    writeln!(file)?;
+                }
+            }
+            "npy" => {
+                // For NPY format, we'd need the npy crate, but for now just save as JSON
+                eprintln!("⚠️  NPY format not yet supported, saving as JSON instead");
+                let output_data = json!({
+                    "model": model_name,
+                    "embeddings": all_embeddings,
+                    "input_count": input_data.len(),
+                    "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
+                });
+                let npy_path = output_path.with_extension("json");
+                fs::write(&npy_path, serde_json::to_string_pretty(&output_data)?)?;
+                println!(
+                    "✓ Results saved to {} (NPY format not implemented)",
+                    npy_path.display()
+                );
+            }
+            _ => {
+                eprintln!("❌ Unsupported output format: {}", args.format);
+                return Ok(());
+            }
+        }
+        println!("✓ Results saved to {}", output_path.display());
+    } else {
+        // Print to stdout
+        let output_data = json!({
+            "model": model_name,
+            "embeddings": all_embeddings,
+            "input_count": input_data.len(),
+            "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
+        });
+        println!("{}", serde_json::to_string_pretty(&output_data)?);
+    }
+
+    println!("✓ Batch processing completed successfully");
+
     Ok(())
 }
 
 async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(config_path)?;
     let config_file_path = get_config_path(None)?;
-    
+
     println!("Configuration ({})", config_file_path.display());
     println!("{}", "-".repeat(50));
-    
+
     println!("\n[server]");
     println!("default_port = {}", config.server.default_port);
     println!("default_bind = \"{}\"", config.server.default_bind);
     println!("default_model = \"{}\"", config.server.default_model);
-    println!("enable_mcp = {}", config.server.enable_mcp);
-    println!("rate_limit_rps = {}", config.server.rate_limit_rps);
-    println!("rate_limit_burst = {}", config.server.rate_limit_burst);
-    println!("enable_tls = {}", config.server.enable_tls);
-    if let Some(cert_path) = &config.server.tls_cert_path {
-        println!("tls_cert_path = \"{}\"", cert_path);
-    }
-    if let Some(key_path) = &config.server.tls_key_path {
-        println!("tls_key_path = \"{}\"", key_path);
-    }
-    
-    println!("\n[auth]");
-    println!("require_api_key = {}", config.auth.require_api_key);
-    println!("registration_enabled = {}", config.auth.registration_enabled);
-    println!("api_key_header = \"{}\"", config.auth.api_key_header);
-    println!("api_key_prefix = \"{}\"", config.auth.api_key_prefix);
-    
+
     println!("\n[models]");
     if let Some(models_dir) = &config.models.models_dir {
         println!("models_dir = \"{}\"", models_dir);
     }
     println!("auto_download = {}", config.models.auto_download);
-    println!("default_distill_dims = {}", config.models.default_distill_dims);
-    
+    println!(
+        "default_distill_dims = {}",
+        config.models.default_distill_dims
+    );
+
     println!("\n[logging]");
     println!("level = \"{}\"", config.logging.level);
     if let Some(file) = &config.logging.file {
@@ -240,7 +379,7 @@ async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::er
     if let Some(max_files) = config.logging.max_files {
         println!("max_files = {}", max_files);
     }
-    
+
     Ok(())
 }
 
@@ -249,11 +388,11 @@ async fn set_config(
     config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut config = load_config(config_path.clone()).unwrap_or_default();
-    
+
     // Parse the key path (e.g., "server.default_port" or "auth.require_api_key")
     let parts: Vec<&str> = args.key.split('.').collect();
     let value = args.value.clone(); // Clone to avoid move issues
-    
+
     match parts.as_slice() {
         ["server", "default_port"] => {
             config.server.default_port = value.parse()?;
@@ -263,24 +402,6 @@ async fn set_config(
         }
         ["server", "default_model"] => {
             config.server.default_model = value;
-        }
-        ["server", "enable_mcp"] => {
-            config.server.enable_mcp = value.parse()?;
-        }
-        ["server", "rate_limit_rps"] => {
-            config.server.rate_limit_rps = value.parse()?;
-        }
-        ["server", "rate_limit_burst"] => {
-            config.server.rate_limit_burst = value.parse()?;
-        }
-        ["server", "enable_tls"] => {
-            config.server.enable_tls = value.parse()?;
-        }
-        ["auth", "require_api_key"] => {
-            config.auth.require_api_key = value.parse()?;
-        }
-        ["auth", "registration_enabled"] => {
-            config.auth.registration_enabled = value.parse()?;
         }
         ["models", "models_dir"] => {
             config.models.models_dir = Some(value);
@@ -305,41 +426,33 @@ async fn set_config(
         ["logging", "json_format"] => {
             config.logging.json_format = value.parse()?;
         }
-        ["auth", "api_key_header"] => {
-            config.auth.api_key_header = value;
-        }
-        ["auth", "api_key_prefix"] => {
-            config.auth.api_key_prefix = value;
-        }
         _ => {
             eprintln!("Unknown configuration key: {}", args.key);
             eprintln!("Available keys:");
             eprintln!("  server.default_port, server.default_bind, server.default_model");
-            eprintln!("  server.enable_mcp, server.rate_limit_rps, server.rate_limit_burst");
-            eprintln!("  auth.require_api_key, auth.registration_enabled");
             eprintln!("  models.models_dir, models.auto_download, models.default_distill_dims");
             eprintln!("  logging.level, logging.file, logging.json_format");
             return Ok(());
         }
     }
-    
+
     save_config(&config, config_path)?;
     println!("✓ Configuration updated: {} = {}", args.key, args.value);
-    
+
     Ok(())
 }
 
 async fn reset_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config_file_path = get_config_path(config_path)?;
-    
+
     if config_file_path.exists() {
         print!("Reset configuration to defaults? [y/N]: ");
         use std::io::{self, Write};
         io::stdout().flush()?;
-        
+
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
-        
+
         if input.trim().to_lowercase().starts_with('y') {
             fs::remove_file(&config_file_path)?;
             println!("✓ Configuration reset to defaults");
@@ -349,20 +462,20 @@ async fn reset_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::e
     } else {
         println!("Configuration file does not exist (already at defaults)");
     }
-    
+
     Ok(())
 }
 
 async fn show_config_path(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config_file_path = get_config_path(config_path)?;
     println!("{}", config_file_path.display());
-    
+
     if config_file_path.exists() {
         println!("  Status: ✓ Exists");
     } else {
         println!("  Status: ✗ Not found (using defaults)");
     }
-    
+
     Ok(())
 }
 
@@ -370,34 +483,37 @@ fn get_config_path(config_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn std:
     if let Some(path) = config_path {
         return Ok(path);
     }
-    
+
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "Could not determine home directory")?;
-    
+
     Ok(PathBuf::from(home).join(".embed-tool").join("config.toml"))
 }
 
 fn load_config(config_path: Option<PathBuf>) -> Result<Config, Box<dyn std::error::Error>> {
     let config_file_path = get_config_path(config_path)?;
-    
+
     if !config_file_path.exists() {
         return Ok(Config::default());
     }
-    
+
     let content = fs::read_to_string(config_file_path)?;
     let config: Config = toml::from_str(&content)?;
     Ok(config)
 }
 
-fn save_config(config: &Config, config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
+fn save_config(
+    config: &Config,
+    config_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let config_file_path = get_config_path(config_path)?;
-    
+
     // Create directory if it doesn't exist
     if let Some(parent) = config_file_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    
+
     let content = toml::to_string_pretty(config)?;
     fs::write(config_file_path, content)?;
     Ok(())
@@ -468,9 +584,6 @@ mod tests {
         assert_eq!(config.server.default_port, 8080);
         assert_eq!(config.server.default_bind, "0.0.0.0");
         assert_eq!(config.server.default_model, "potion-32M");
-        assert!(!config.server.enable_mcp);
-        assert_eq!(config.auth.require_api_key, true);
-        assert_eq!(config.auth.registration_enabled, true);
         assert_eq!(config.logging.level, "info");
     }
 
@@ -481,7 +594,6 @@ mod tests {
         let mut config = Config::default();
         config.server.default_port = 9090;
         config.server.default_model = "custom-model".to_string();
-        config.auth.require_api_key = false;
 
         save_config(&config, Some(custom.clone())).unwrap();
         assert!(custom.exists());
@@ -489,7 +601,6 @@ mod tests {
         let loaded = load_config(Some(custom)).unwrap();
         assert_eq!(loaded.server.default_port, 9090);
         assert_eq!(loaded.server.default_model, "custom-model");
-        assert_eq!(loaded.auth.require_api_key, false);
     }
 
     #[test]
@@ -534,25 +645,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_config_auth_values() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Test setting auth.require_api_key
-            let args = SetConfigArgs {
-                key: "auth.require_api_key".to_string(),
-                value: "false".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            // Verify the change
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.auth.require_api_key, false);
-        });
-    }
-
-    #[test]
     fn test_set_config_logging_level() {
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -575,10 +667,10 @@ mod tests {
     fn test_handle_embed_command_executes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let args = EmbedArgs { 
-                text: "Hello test".to_string(), 
-                model: Some("potion-32M".to_string()), 
-                format: "json".to_string() 
+            let args = EmbedArgs {
+                text: "Hello test".to_string(),
+                model: Some("potion-32M".to_string()),
+                format: "json".to_string(),
             };
             // Should print guidance and return Ok
             let result = handle_embed_command(args, None).await;
@@ -624,74 +716,6 @@ mod tests {
     }
 
     #[test]
-    fn test_set_config_auth_require_api_key() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "auth.require_api_key".to_string(),
-                value: "false".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.auth.require_api_key, false);
-        });
-    }
-
-    #[test]
-    fn test_set_config_auth_api_key_header() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "auth.api_key_header".to_string(),
-                value: "X-Custom-Key".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.auth.api_key_header, "X-Custom-Key");
-        });
-    }
-
-    #[test]
-    fn test_set_config_auth_api_key_prefix() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "auth.api_key_prefix".to_string(),
-                value: "custom-".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.auth.api_key_prefix, "custom-");
-        });
-    }
-
-    #[test]
-    fn test_set_config_server_enable_tls() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "server.enable_tls".to_string(),
-                value: "true".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.server.enable_tls, true);
-        });
-    }
-
-    #[test]
     fn test_set_config_unknown_key() {
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -718,10 +742,6 @@ mod tests {
 default_port = 9999
 default_bind = "127.0.0.1"
 default_model = "potion-32M"
-enable_mcp = false
-rate_limit_rps = 100
-rate_limit_burst = 200
-enable_tls = false
 
 [auth]
 require_api_key = true
@@ -830,74 +850,6 @@ json_format = false
     }
 
     #[test]
-    fn test_set_config_server_enable_mcp() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "server.enable_mcp".to_string(),
-                value: "true".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.server.enable_mcp, true);
-        });
-    }
-
-    #[test]
-    fn test_set_config_server_rate_limit_rps() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "server.rate_limit_rps".to_string(),
-                value: "50".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.server.rate_limit_rps, 50);
-        });
-    }
-
-    #[test]
-    fn test_set_config_server_rate_limit_burst() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "server.rate_limit_burst".to_string(),
-                value: "150".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.server.rate_limit_burst, 150);
-        });
-    }
-
-    #[test]
-    fn test_set_config_auth_registration_enabled() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let args = SetConfigArgs {
-                key: "auth.registration_enabled".to_string(),
-                value: "false".to_string(),
-            };
-            let result = set_config(args, Some(custom.clone())).await;
-            assert!(result.is_ok());
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.auth.registration_enabled, false);
-        });
-    }
-
-    #[test]
     fn test_set_config_models_models_dir() {
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -961,7 +913,10 @@ json_format = false
             assert!(result.is_ok());
 
             let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.logging.file, Some("/var/log/embed-tool.log".to_string()));
+            assert_eq!(
+                config.logging.file,
+                Some("/var/log/embed-tool.log".to_string())
+            );
         });
     }
 
@@ -1042,25 +997,6 @@ json_format = false
     }
 
     #[test]
-    fn test_set_config_server_tls_cert_path() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // First enable TLS
-            let enable_args = SetConfigArgs {
-                key: "server.enable_tls".to_string(),
-                value: "true".to_string(),
-            };
-            set_config(enable_args, Some(custom.clone())).await.unwrap();
-
-            // This would require TLS cert/key paths, but they're not directly settable
-            // The coverage shows these lines are not hit in tests
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.server.enable_tls, true);
-        });
-    }
-
-    #[test]
     fn test_set_config_logging_max_file_size() {
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1085,142 +1021,6 @@ json_format = false
     }
 
     #[test]
-    fn test_set_config_server_tls_key_path() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // TLS cert/key paths are not directly configurable via set_config
-            // This ensures the default None values are covered
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.server.tls_cert_path, None);
-            assert_eq!(config.server.tls_key_path, None);
-        });
-    }
-
-    #[test]
-    fn test_show_config_with_custom_path() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let temp_dir = TempDir::new().unwrap();
-            let custom_path = temp_dir.path().join("custom_config.toml");
-            let result = show_config(Some(custom_path)).await;
-            assert!(result.is_ok());
-        });
-    }
-
-    #[test]
-    fn test_show_config_path_with_custom_path() {
-        let custom_dir = TempDir::new().unwrap();
-        let custom_path = custom_dir.path().join("path.toml");
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let result = show_config_path(Some(custom_path.clone())).await;
-            assert!(result.is_ok());
-        });
-    }
-
-    #[test]
-    fn test_reset_config_with_existing_file() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Create a config file first
-            let mut config = Config::default();
-            config.server.default_port = 9999;
-            save_config(&config, Some(custom.clone())).unwrap();
-
-            // This test covers the file exists path
-            assert!(custom.exists());
-        });
-    }
-
-    #[test]
-    fn test_set_config_parse_errors() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Test invalid integer parsing
-            let args = SetConfigArgs {
-                key: "server.default_port".to_string(),
-                value: "not_a_number".to_string(),
-            };
-            let result = set_config(args, Some(custom)).await;
-            // Should return error for invalid integer
-            assert!(result.is_err());
-        });
-    }
-
-    #[test]
-    fn test_set_config_boolean_parse_errors() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Test invalid boolean parsing
-            let args = SetConfigArgs {
-                key: "server.enable_mcp".to_string(),
-                value: "not_a_boolean".to_string(),
-            };
-            let result = set_config(args, Some(custom)).await;
-            // Should return error for invalid boolean
-            assert!(result.is_err());
-        });
-    }
-
-    #[test]
-    fn test_load_config_invalid_toml() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            // Create invalid TOML file in temp dir
-            let temp_dir = TempDir::new().unwrap();
-            let config_path = temp_dir.path().join("invalid_config.toml");
-            std::fs::write(&config_path, "invalid [toml content").unwrap();
-
-            let result = load_config(Some(config_path.clone()));
-            assert!(result.is_err());
-            // TempDir cleans automatically
-        });
-    }
-
-    // Removed environment mutation test to avoid unsafe env operations
-
-    #[test]
-    fn test_handle_embed_command_no_model() {
-        let args = EmbedArgs {
-            text: "Hello world".to_string(),
-            model: None,
-            format: "json".to_string(),
-        };
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let result = handle_embed_command(args, None).await;
-            assert!(result.is_ok());
-        });
-    }
-
-    #[test]
-    fn test_handle_batch_command_with_output() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let temp_dir = TempDir::new().unwrap();
-            let input_file = temp_dir.path().join("input.json");
-            fs::write(&input_file, "[]").unwrap();
-
-            let args = BatchArgs {
-                input: input_file.clone(),
-                output: Some(temp_dir.path().join("output.json")),
-                model: None,
-                format: "json".to_string(),
-                batch_size: 32,
-            };
-
-            let result = handle_batch_command(args, None).await;
-            assert!(result.is_ok());
-            // TempDir cleans automatically
-        });
-    }
-
-    #[test]
     fn test_set_config_all_server_keys() {
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1230,10 +1030,6 @@ json_format = false
                 ("server.default_port", "9090"),
                 ("server.default_bind", "127.0.0.1"),
                 ("server.default_model", "test-model"),
-                ("server.enable_mcp", "true"),
-                ("server.rate_limit_rps", "50"),
-                ("server.rate_limit_burst", "150"),
-                ("server.enable_tls", "true"),
             ];
 
             for (key, value) in test_cases {
@@ -1249,39 +1045,6 @@ json_format = false
             assert_eq!(config.server.default_port, 9090);
             assert_eq!(config.server.default_bind, "127.0.0.1");
             assert_eq!(config.server.default_model, "test-model");
-            assert_eq!(config.server.enable_mcp, true);
-            assert_eq!(config.server.rate_limit_rps, 50);
-            assert_eq!(config.server.rate_limit_burst, 150);
-            assert_eq!(config.server.enable_tls, true);
-        });
-    }
-
-    #[test]
-    fn test_set_config_all_auth_keys() {
-        let (_dir, custom) = make_temp_config_path();
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            let test_cases = vec![
-                ("auth.require_api_key", "false"),
-                ("auth.registration_enabled", "false"),
-                ("auth.api_key_header", "X-Custom-Header"),
-                ("auth.api_key_prefix", "Custom-Prefix "),
-            ];
-
-            for (key, value) in test_cases {
-                let args = SetConfigArgs {
-                    key: key.to_string(),
-                    value: value.to_string(),
-                };
-                let result = set_config(args, Some(custom.clone())).await;
-                assert!(result.is_ok(), "Failed to set {}", key);
-            }
-
-            let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.auth.require_api_key, false);
-            assert_eq!(config.auth.registration_enabled, false);
-            assert_eq!(config.auth.api_key_header, "X-Custom-Header");
-            assert_eq!(config.auth.api_key_prefix, "Custom-Prefix ");
         });
     }
 
@@ -1306,7 +1069,10 @@ json_format = false
             }
 
             let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.models.models_dir, Some("/custom/models/dir".to_string()));
+            assert_eq!(
+                config.models.models_dir,
+                Some("/custom/models/dir".to_string())
+            );
             assert_eq!(config.models.auto_download, false);
             assert_eq!(config.models.default_distill_dims, 256);
         });

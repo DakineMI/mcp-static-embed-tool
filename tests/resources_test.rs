@@ -1,4 +1,4 @@
-use static_embedding_server::resources;
+use static_embedding_tool::resources;
 
 #[test]
 fn list_resources_contains_instructions() {

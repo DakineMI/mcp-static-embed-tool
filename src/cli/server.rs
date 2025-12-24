@@ -69,11 +69,11 @@ pub async fn handle_server_command(
 ) -> AnyhowResult<()> {
     match action {
         ServerAction::Start(args) => handle_start_server(args, config_path).await,
-        ServerAction::Stop => stop_server().await,
-        ServerAction::Status => show_status().await,
+        ServerAction::Stop => stop_server(None).await,
+        ServerAction::Status => show_status(None).await,
         ServerAction::Restart(args) => {
-            if is_server_running().await? {
-                stop_server().await?;
+            if is_server_running(args.pid_file.as_ref()).await? {
+                stop_server(args.pid_file.as_ref()).await?;
                 // Wait a moment for cleanup
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
@@ -113,7 +113,7 @@ async fn handle_start_server(
     validate_start_args(&args).await?;
 
     // Check if server is already running
-    if is_server_running().await? {
+    if is_server_running(args.pid_file.as_ref()).await? {
         eprintln!("Server is already running. Use 'embed-tool server stop' first or 'embed-tool server restart'.");
         return Ok(());
     }
@@ -148,44 +148,17 @@ async fn start_foreground(args: StartArgs) -> AnyhowResult<()> {
         ServerConfig {
             server_url: "stdio://-".to_string(),
             bind_address: None,
-            socket_path: None,
-            auth_disabled: args.auth_disabled,
-            registration_enabled: !args.auth_disabled,
-            rate_limit_rps: 100,
-            rate_limit_burst: 200,
-            api_key_db_path: "./data/api_keys.db".to_string(),
-            tls_cert_path: None,
-            tls_key_path: None,
-            enable_mcp: args.mcp,
         }
     } else if let Some(socket_path) = args.socket_path {
         ServerConfig {
             server_url: format!("unix://{}", socket_path.display()),
             bind_address: None,
-            socket_path: Some(socket_path.to_string_lossy().into_owned()),
-            auth_disabled: args.auth_disabled,
-            registration_enabled: !args.auth_disabled,
-            rate_limit_rps: 100,
-            rate_limit_burst: 200,
-            api_key_db_path: "./data/api_keys.db".to_string(),
-            tls_cert_path: None,
-            tls_key_path: None,
-            enable_mcp: args.mcp,
         }
     } else {
         let addr = format!("{}:{}", args.bind, args.port);
         ServerConfig {
             server_url: format!("http://{}", addr),
             bind_address: Some(addr),
-            socket_path: None,
-            auth_disabled: args.auth_disabled,
-            registration_enabled: !args.auth_disabled,
-            rate_limit_rps: 100,
-            rate_limit_burst: 200,
-            api_key_db_path: "./data/api_keys.db".to_string(),
-            tls_cert_path: args.tls_cert_path,
-            tls_key_path: args.tls_key_path,
-            enable_mcp: args.mcp,
         }
     };
 
@@ -196,10 +169,8 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     eprintln!("Starting embedding server as daemon...");
     
     let current_exe = std::env::current_exe()?;
-    let pid_file = args
-        .pid_file
-        .clone()
-        .unwrap_or_else(pid_file_path);
+    let pid_file = get_pid_file_path(args.pid_file.as_ref());
+
     if let Some(parent) = pid_file.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -225,6 +196,14 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     if args.mcp {
         cmd_args.push("--mcp");
     }
+
+    if let Some(pid_path) = &args.pid_file {
+        cmd_args.push("--pid-file");
+        // We need to convert PathBuf to str, ensuring it's valid UTF-8
+        if let Some(s) = pid_path.to_str() {
+            cmd_args.push(s);
+        }
+    }
     
     // Start the process detached
     let child = Command::new(current_exe)
@@ -243,8 +222,8 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     Ok(())
 }
 
-async fn stop_server() -> AnyhowResult<()> {
-    let pid_file = pid_file_path();
+async fn stop_server(custom_pid: Option<&PathBuf>) -> AnyhowResult<()> {
+    let pid_file = get_pid_file_path(custom_pid);
     
     if !pid_file.exists() {
         // Try to find by port
@@ -267,8 +246,8 @@ async fn stop_server() -> AnyhowResult<()> {
     Ok(())
 }
 
-async fn show_status() -> AnyhowResult<()> {
-    let pid_file = pid_file_path();
+async fn show_status(custom_pid: Option<&PathBuf>) -> AnyhowResult<()> {
+    let pid_file = get_pid_file_path(custom_pid);
     
     if pid_file.exists() {
         let pid_str = fs::read_to_string(&pid_file)?;
@@ -296,8 +275,8 @@ async fn show_status() -> AnyhowResult<()> {
     Ok(())
 }
 
-async fn is_server_running() -> AnyhowResult<bool> {
-    let pid_file = pid_file_path();
+async fn is_server_running(custom_pid: Option<&PathBuf>) -> AnyhowResult<bool> {
+    let pid_file = get_pid_file_path(custom_pid);
     
     if pid_file.exists() {
         let pid_str = fs::read_to_string(&pid_file)?;
@@ -313,6 +292,13 @@ async fn is_server_running() -> AnyhowResult<bool> {
     
     // Check by port as fallback
     Ok(find_server_by_port(8080).await?.is_some())
+}
+
+fn get_pid_file_path(custom: Option<&PathBuf>) -> PathBuf {
+    if let Some(path) = custom {
+        return path.clone();
+    }
+    pid_file_path()
 }
 
 fn is_process_running(pid: u32) -> bool {
@@ -522,43 +508,37 @@ mod tests {
         // Test with a non-existent PID
         assert!(!is_process_running(999999));
 
-        // Test with PID 1 (usually exists on Unix systems)
-        // Note: This might fail on some systems, but is generally reliable
-        #[cfg(unix)]
-        assert!(is_process_running(1));
+        // Test with current PID (should always exist and be accessible)
+        assert!(is_process_running(std::process::id()));
     }
 
     #[tokio::test]
     async fn test_is_server_running_no_pid_file() {
-        // Remove any existing PID file
-        let pid_file = pid_file_path();
-        let _ = fs::remove_file(&pid_file);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_is_running.pid");
 
         // Should return false when no PID file exists and no server is running on port 8080
-        let result = is_server_running().await;
+        let result = is_server_running(Some(&pid_file)).await;
         assert!(result.is_ok());
-        // Note: This might return true if something is actually running on port 8080
     }
 
     #[tokio::test]
     async fn test_show_status_no_server() {
-        // Remove any existing PID file
-        let pid_file = pid_file_path();
-        let _ = fs::remove_file(&pid_file);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_status.pid");
 
         // Should not panic
-        let result = show_status().await;
+        let result = show_status(Some(&pid_file)).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_stop_server_no_pid_file() {
-        // Remove any existing PID file
-        let pid_file = pid_file_path();
-        let _ = fs::remove_file(&pid_file);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_stop.pid");
 
         // Should not panic
-        let result = stop_server().await;
+        let result = stop_server(Some(&pid_file)).await;
         assert!(result.is_ok());
     }
 
@@ -615,9 +595,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_server_command_restart() {
-        // Remove any existing PID file first
-        let pid_file = pid_file_path();
-        let _ = fs::remove_file(&pid_file);
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_restart.pid");
         
         let args = StartArgs {
             port: 8082, // Use different port
@@ -637,7 +616,9 @@ mod tests {
         let result = handle_server_command(ServerAction::Restart(args), None).await;
         
         // Clean up any PID file
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+             let _ = fs::remove_file(&pid_file);
+        }
         
         // Should succeed even if no server was running
         assert!(result.is_ok() || result.is_err());
@@ -770,7 +751,9 @@ mod tests {
         handle.abort();
         
         // Clean up socket file if created
-        let _ = fs::remove_file(&socket_path);
+        if socket_path.exists() {
+            let _ = fs::remove_file(&socket_path);
+        }
         
         // Test passes if we got here without hanging
         assert!(true);
@@ -826,7 +809,9 @@ mod tests {
         let result = start_daemon(args).await;
         
         // Clean up any PID file that might have been created
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
         
         // The result depends on whether the process can actually be spawned
         assert!(result.is_ok() || result.is_err());
@@ -854,7 +839,9 @@ mod tests {
         let result = start_daemon(args).await;
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
         
         assert!(result.is_ok() || result.is_err());
     }
@@ -878,20 +865,23 @@ mod tests {
         let result = start_daemon(args).await;
         
         // Clean up default PID file
-    let default_pid_file = pid_file_path();
-        let _ = fs::remove_file(&default_pid_file);
+        let default_pid_file = pid_file_path();
+        if default_pid_file.exists() {
+            let _ = fs::remove_file(&default_pid_file);
+        }
         
         assert!(result.is_ok() || result.is_err());
     }
 
     #[tokio::test]
     async fn test_stop_server_with_valid_pid_file() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_stop_valid.pid");
         
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "999999").unwrap();
         
-        let result = stop_server().await;
+        let result = stop_server(Some(&pid_file)).await;
         
         // Should succeed even if process doesn't exist
         assert!(result.is_ok());
@@ -902,28 +892,32 @@ mod tests {
 
     #[tokio::test]
     async fn test_stop_server_invalid_pid_file() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_stop_invalid.pid");
         
         // Create a PID file with invalid content
         fs::write(&pid_file, "not_a_number").unwrap();
         
-        let result = stop_server().await;
+        let result = stop_server(Some(&pid_file)).await;
         
         // Should handle parse error gracefully
         assert!(result.is_err());
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
     }
 
     #[tokio::test]
     async fn test_show_status_with_stale_pid() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_status_stale.pid");
         
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "999999").unwrap();
         
-        let result = show_status().await;
+        let result = show_status(Some(&pid_file)).await;
         assert!(result.is_ok());
         
         // PID file should be removed due to stale PID
@@ -932,41 +926,48 @@ mod tests {
 
     #[tokio::test]
     async fn test_show_status_with_valid_pid() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_status_valid.pid");
         
         // Use current process PID (should be running)
         let current_pid = std::process::id();
         fs::write(&pid_file, current_pid.to_string()).unwrap();
         
-        let result = show_status().await;
+        let result = show_status(Some(&pid_file)).await;
         assert!(result.is_ok());
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
     }
 
     #[tokio::test]
     async fn test_show_status_invalid_pid_file_content() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_status_invalid.pid");
         
         // Create a PID file with invalid content
         fs::write(&pid_file, "invalid_pid").unwrap();
         
-        let result = show_status().await;
+        let result = show_status(Some(&pid_file)).await;
         assert!(result.is_ok());
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
     }
 
     #[tokio::test]
     async fn test_is_server_running_with_stale_pid() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_running_stale.pid");
         
         // Create a PID file with a non-existent PID
         fs::write(&pid_file, "999999").unwrap();
         
-        let result = is_server_running().await;
+        let result = is_server_running(Some(&pid_file)).await;
         assert!(result.is_ok());
         
         // PID file should be cleaned up
@@ -975,32 +976,38 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_server_running_with_valid_pid() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_running_valid.pid");
         
         // Use current process PID
         let current_pid = std::process::id();
         fs::write(&pid_file, current_pid.to_string()).unwrap();
         
-        let result = is_server_running().await;
+        let result = is_server_running(Some(&pid_file)).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
     }
 
     #[tokio::test]
     async fn test_is_server_running_invalid_pid_content() {
-        let pid_file = pid_file_path();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_running_invalid.pid");
         
         // Create PID file with invalid content
         fs::write(&pid_file, "not_a_number").unwrap();
         
-        let result = is_server_running().await;
+        let result = is_server_running(Some(&pid_file)).await;
         assert!(result.is_ok());
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
     }
 
     #[test]
@@ -1027,8 +1034,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_start_server_already_running() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("test_start_existing.pid");
+
         // First, simulate a server already running by creating a PID file
-        let pid_file = pid_file_path();
         let current_pid = std::process::id();
         fs::write(&pid_file, current_pid.to_string()).unwrap();
         
@@ -1041,7 +1050,7 @@ mod tests {
             mcp: false,
             auth_disabled: true,
             daemon: false,
-            pid_file: None,
+            pid_file: Some(pid_file.clone()),
             tls_cert_path: None,
             tls_key_path: None,
         };
@@ -1052,6 +1061,8 @@ mod tests {
         assert!(result.is_ok());
         
         // Clean up
-        let _ = fs::remove_file(&pid_file);
+        if pid_file.exists() {
+            let _ = fs::remove_file(&pid_file);
+        }
     }
 }

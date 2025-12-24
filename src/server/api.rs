@@ -419,19 +419,9 @@ mod tests {
     use axum::response::Json;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use crate::server::state::Model;
+    use crate::server::state::{Model, MockModel};
 
-    // Mock StaticModel for testing
-    #[derive(Clone)]
-    struct MockModel {
-        name: String,
-    }
 
-    impl Model for MockModel {
-        fn encode(&self, inputs: &[String]) -> Vec<Vec<f32>> {
-            inputs.iter().map(|_| vec![0.1, 0.2, 0.3]).collect()
-        }
-    }
 
     // Mock model that panics when encoding to simulate spawn_blocking JoinError
     #[derive(Clone)]
@@ -445,8 +435,8 @@ mod tests {
 
     fn create_test_app_state() -> Arc<AppState> {
         let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
-        models.insert("potion-32M".to_string(), Arc::new(MockModel { name: "potion-32M".to_string() }));
-        models.insert("test-model".to_string(), Arc::new(MockModel { name: "test-model".to_string() }));
+        models.insert("potion-32M".to_string(), Arc::new(MockModel::new("potion-32M".to_string())));
+        models.insert("test-model".to_string(), Arc::new(MockModel::new("test-model".to_string())));
 
         Arc::new(AppState {
             models,

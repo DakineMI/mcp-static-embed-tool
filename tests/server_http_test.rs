@@ -1,5 +1,5 @@
 // Integration test for server/http.rs
-use static_embedding_server::server::http;
+use static_embedding_tool::server::http;
 
 #[tokio::test]
 async fn health_returns_ok() {

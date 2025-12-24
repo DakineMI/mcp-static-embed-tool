@@ -1,41 +1,3 @@
-//! Model Context Protocol (MCP) resources for the embedding server.
-//!
-//! This module implements MCP resource endpoints that provide static and dynamic
-//! documentation, configuration, and metadata through the MCP interface.
-//!
-//! ## Resource Types
-//!
-//! - **Static**: Built-in documentation, schemas, and help text
-//! - **Dynamic**: Runtime configuration, model lists, metrics
-//! - **Template**: Parameterized content with variable substitution
-//!
-//! ## Available Resources
-//!
-//! - `docs://api` - OpenAI-compatible API documentation
-//! - `docs://mcp` - MCP interface documentation
-//! - `config://current` - Active server configuration
-//! - `models://list` - Available models with metadata
-//! - `metrics://server` - Server performance metrics
-//!
-//! ## Resource Provider Pattern
-//!
-//! Resources are implemented via the `ResourceProvider` trait which defines:
-//! - URI (unique identifier)
-//! - Name and description
-//! - MIME type
-//! - Content generation
-//!
-//! ## Examples
-//!
-//! ```json
-//! // MCP resource request
-//! {
-//!   "uri": "docs://api",
-//!   "format": "text/markdown"
-//! }
-//! ```
-
-#[cfg(feature = "mcp")]
 use rmcp::model::{Annotated, RawResource, ReadResourceResult, Resource, ResourceContents};
 
 /// Trait for MCP resource providers.
@@ -76,6 +38,7 @@ pub trait ResourceProvider {
             description: Some(self.description().to_string()),
             icons: Some(vec![]),
             title: Some(self.name().to_string()),
+            meta: None,
         };
         Annotated::new(raw, None)
     }

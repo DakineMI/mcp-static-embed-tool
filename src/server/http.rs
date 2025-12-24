@@ -34,7 +34,7 @@ use axum::http::StatusCode;
 /// # Examples
 ///
 /// ```
-/// # use static_embedding_server::server::http::health;
+/// use static_embedding_tool::server::http::health;
 /// # use axum::http::StatusCode;
 /// # #[tokio::main]
 /// # async fn main() {

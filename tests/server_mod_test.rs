@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Json, Query};
-use static_embedding_server::server::{self, EmbeddingRequest, QueryParams};
-use static_embedding_server::server::state::{AppState, Model};
+use static_embedding_tool::server::{self, EmbeddingRequest, QueryParams};
+use static_embedding_tool::server::state::{AppState, Model};
 
 #[derive(Clone)]
 struct MockModel;
