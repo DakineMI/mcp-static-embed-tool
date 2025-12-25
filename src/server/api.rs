@@ -41,118 +41,11 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::error;
 
 use super::state::AppState;
-
-// ============================================================================
-// Request/Response Structures
-// ============================================================================
-
-/// Request structure for POST /v1/embeddings endpoint.
-///
-/// Compatible with OpenAI's embeddings API format.
-#[derive(Deserialize)]
-pub struct EmbeddingRequest {
-    /// Input text(s) to generate embeddings for. Cannot be empty.
-    pub input: Vec<String>,
-    /// Model to use for embedding generation. If omitted, uses default model.
-    pub model: Option<String>,
-    /// Encoding format for embeddings. Only "float" is supported.
-    pub encoding_format: Option<String>, // "float" or "base64" (we only support float)
-    /// Target dimensions for output embeddings (not yet implemented).
-    pub dimensions: Option<usize>,       // For dimension reduction (not implemented)
-    /// User identifier for tracking and analytics.
-    pub user: Option<String>,            // For tracking
-}
-
-/// Query parameters for endpoints supporting model selection.
-#[derive(Deserialize)]
-pub struct QueryParams {
-    /// Optional model name parameter for GET endpoints.
-    pub model: Option<String>,
-}
-
-/// Response structure for POST /v1/embeddings endpoint.
-///
-/// Returns embeddings with usage statistics.
-#[derive(Serialize)]
-pub struct EmbeddingResponse {
-    /// Object type identifier ("list").
-    pub object: String,
-    /// Array of embedding results, one per input text.
-    pub data: Vec<EmbeddingData>,
-    /// Model used for generating embeddings.
-    pub model: String,
-    /// Token usage statistics.
-    pub usage: Usage,
-}
-
-/// Individual embedding result within EmbeddingResponse.
-#[derive(Serialize)]
-pub struct EmbeddingData {
-    /// Object type identifier ("embedding").
-    pub object: String,
-    /// Dense vector embedding.
-    pub embedding: Vec<f32>,
-    /// Index of this embedding in the input array.
-    pub index: usize,
-}
-
-/// Token usage statistics for billing and monitoring.
-#[derive(Serialize)]
-pub struct Usage {
-    /// Number of tokens processed (approximated from input length).
-    pub prompt_tokens: usize,
-    /// Total tokens (same as prompt_tokens for embeddings).
-    pub total_tokens: usize,
-}
-
-/// Response structure for GET /v1/models endpoint.
-#[derive(Serialize)]
-pub struct ModelsResponse {
-    /// Object type identifier ("list").
-    pub object: String,
-    /// Array of available models.
-    pub data: Vec<ModelInfo>,
-}
-
-/// Information about a single available model.
-#[derive(Serialize)]
-pub struct ModelInfo {
-    /// Model identifier used in API requests.
-    pub id: String,
-    /// Object type identifier ("model").
-    pub object: String,
-    /// Unix timestamp of model creation/loading.
-    pub created: u64,
-    /// Owner/provider of the model (e.g., "static-embedding-server").
-    pub owned_by: String,
-}
-
-/// API error response structure (OpenAI-compatible).
-#[derive(Serialize)]
-#[derive(Debug)]
-pub struct ApiError {
-    /// Error details.
-    pub error: ErrorDetails,
-}
-
-/// Detailed error information.
-#[derive(Serialize)]
-#[derive(Debug)]
-pub struct ErrorDetails {
-    /// Human-readable error message.
-    pub message: String,
-    /// Error classification ("invalid_request_error", "server_error", etc.).
-    pub r#type: String,
-    /// Parameter that caused the error (if applicable).
-    pub param: Option<String>,
-    /// Error code for programmatic handling.
-    pub code: Option<String>,
-}
+use super::{EmbeddingRequest, QueryParams, EmbeddingResponse, EmbeddingData, Usage, ModelsResponse, ModelInfo, ApiError, ErrorDetails};
 
 // ============================================================================
 // Route Handlers
@@ -270,7 +163,7 @@ pub async fn embeddings_handler(
 
         for chunk in chunks {
             let chunk_vec: Vec<String> = chunk.to_vec();
-            let model_clone = model.clone(); // Assuming StaticModel is Clone
+            let model_clone = model.clone();
             chunk_futures.push(spawn_blocking(move || model_clone.encode(&chunk_vec)));
         }
 
@@ -309,14 +202,16 @@ pub async fn embeddings_handler(
         })
         .collect();
 
-    // Usage for embeddings is 0 tokens
+    // Approximate token usage (roughly 4 characters per token)
+    let prompt_tokens: usize = request.input.iter().map(|s| (s.len() + 3) / 4).sum();
+
     let response = EmbeddingResponse {
         object: "list".to_string(),
         data,
         model: model_name,
         usage: Usage {
-            prompt_tokens: 0,
-            total_tokens: 0,
+            prompt_tokens,
+            total_tokens: prompt_tokens,
         },
     };
 
@@ -415,8 +310,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use crate::server::state::{Model, MockModel};
-
-
 
     // Mock model that panics when encoding to simulate spawn_blocking JoinError
     #[derive(Clone)]
@@ -544,7 +437,7 @@ mod tests {
     #[tokio::test]
     async fn test_embeddings_handler_model_not_found() {
         let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
-        models.insert("existing-model".to_string(), Arc::new(MockModel { name: "existing-model".to_string() }));
+        models.insert("existing-model".to_string(), Arc::new(MockModel::new("existing-model".to_string(), 384)));
 
         let state = Arc::new(AppState {
             models,

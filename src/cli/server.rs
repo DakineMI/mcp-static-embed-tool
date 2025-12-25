@@ -6,8 +6,59 @@ use anyhow::{anyhow, Result as AnyhowResult};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::fs;
-#[cfg(any(windows, not(any(unix, windows))))]
 use sysinfo::{System, Pid};
+
+/// Manages a PID file for tracking server processes.
+struct PidFile {
+    path: PathBuf,
+}
+
+impl PidFile {
+    fn new(custom_path: Option<&PathBuf>) -> Self {
+        let path = custom_path.cloned().unwrap_or_else(pid_file_path);
+        Self { path }
+    }
+
+    fn write(&self, pid: u32) -> AnyhowResult<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&self.path, pid.to_string())?;
+        Ok(())
+    }
+
+    fn read(&self) -> AnyhowResult<Option<u32>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        let content = fs::read_to_string(&self.path)?;
+        let pid = content.trim().parse::<u32>()
+            .map_err(|e| anyhow!("Invalid PID file content: {}", e))?;
+        Ok(Some(pid))
+    }
+
+    fn remove(&self) -> AnyhowResult<()> {
+        if self.path.exists() {
+            fs::remove_file(&self.path)?;
+        }
+        Ok(())
+    }
+
+    fn is_running(&self) -> AnyhowResult<bool> {
+        match self.read()? {
+            Some(pid) => {
+                if is_process_running(pid) {
+                    Ok(true)
+                } else {
+                    // Stale PID file
+                    let _ = self.remove();
+                    Ok(false)
+                }
+            }
+            None => Ok(false),
+        }
+    }
+}
 
 /// Handle server lifecycle commands.
 ///
@@ -29,13 +80,18 @@ pub async fn handle_server_command(
     action: ServerAction,
     config_path: Option<PathBuf>,
 ) -> AnyhowResult<()> {
+    let config = crate::cli::config::load_config(config_path.clone())
+        .map_err(|e| anyhow!("Failed to load config: {}", e))?;
+    let port = config.server.default_port;
+
     match action {
         ServerAction::Start(args) => handle_start_server(args, config_path).await,
-        ServerAction::Stop => stop_server(None).await,
-        ServerAction::Status => show_status(None).await,
+        ServerAction::Stop => stop_server(None, port).await,
+        ServerAction::Status => show_status(None, port).await,
         ServerAction::Restart(args) => {
-            if is_server_running(args.pid_file.as_ref()).await? {
-                stop_server(args.pid_file.as_ref()).await?;
+            let pid_file = PidFile::new(args.pid_file.as_ref());
+            if pid_file.is_running()? {
+                stop_server(args.pid_file.as_ref(), port).await?;
                 // Wait a moment for cleanup
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
@@ -75,8 +131,9 @@ async fn handle_start_server(
     validate_start_args(&args).await?;
 
     // Check if server is already running
-    if is_server_running(args.pid_file.as_ref()).await? {
-        eprintln!("Server is already running. Use 'embed-tool server stop' first or 'embed-tool server restart'.");
+    let pid_file = PidFile::new(args.pid_file.as_ref());
+    if pid_file.is_running()? || find_server_by_port(args.port).await?.is_some() {
+        eprintln!("Server is already running on port {}. Use 'embed-tool server stop' first or 'embed-tool server restart'.", args.port);
         return Ok(());
     }
 
@@ -127,12 +184,8 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
     eprintln!("Starting embedding server as daemon...");
     
     let current_exe = std::env::current_exe()?;
-    let pid_file = get_pid_file_path(args.pid_file.as_ref());
+    let pid_file = PidFile::new(args.pid_file.as_ref());
 
-    if let Some(parent) = pid_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    
     let port_str = args.port.to_string();
     let bind_str = args.bind.clone();
     let default_model_str = args.default_model.clone();
@@ -183,60 +236,55 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
         .spawn()?;
     
     // Write PID file
-    fs::write(&pid_file, child.id().to_string())?;
+    pid_file.write(child.id())?;
     
     eprintln!("Server started as daemon with PID: {}", child.id());
-    eprintln!("PID file: {}", pid_file.display());
+    eprintln!("PID file: {}", pid_file.path.display());
     
     Ok(())
 }
 
-async fn stop_server(custom_pid: Option<&PathBuf>) -> AnyhowResult<()> {
-    let pid_file = get_pid_file_path(custom_pid);
+async fn stop_server(custom_pid: Option<&PathBuf>, port: u16) -> AnyhowResult<()> {
+    let pid_file = PidFile::new(custom_pid);
     
-    if !pid_file.exists() {
-        // Try to find by port
-        if let Some(pid) = find_server_by_port(8080).await? {
+    match pid_file.read()? {
+        Some(pid) => {
             terminate_process(pid)?;
-            eprintln!("Server stopped (found by port)");
-        } else {
-            eprintln!("No running server found");
+            pid_file.remove()?;
+            eprintln!("Server stopped (PID: {})", pid);
         }
-        return Ok(());
-    }
-    
-    let pid_str = fs::read_to_string(&pid_file)?;
-    let pid: u32 = pid_str.trim().parse()?;
-    
-    terminate_process(pid)?;
-    fs::remove_file(&pid_file)?;
-    
-    eprintln!("Server stopped (PID: {})", pid);
-    Ok(())
-}
-
-async fn show_status(custom_pid: Option<&PathBuf>) -> AnyhowResult<()> {
-    let pid_file = get_pid_file_path(custom_pid);
-    
-    if pid_file.exists() {
-        let pid_str = fs::read_to_string(&pid_file)?;
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if is_process_running(pid) {
-                eprintln!("Server is running (PID: {})", pid);
-                eprintln!("PID file: {}", pid_file.display());
-                
-                // Try to get more info by checking port
-                if let Some(_) = find_server_by_port(8080).await? {
-                    eprintln!("HTTP API: http://localhost:8080");
-                }
+        None => {
+            // Try to find by port as fallback
+            if let Some(pid) = find_server_by_port(port).await? {
+                terminate_process(pid)?;
+                eprintln!("Server stopped (found by port {})", port);
             } else {
-                eprintln!("Server is not running (stale PID file)");
-                fs::remove_file(&pid_file)?;
+                eprintln!("No running server found on port {}", port);
             }
         }
-    } else if let Some(pid) = find_server_by_port(8080).await? {
+    }
+    Ok(())
+}
+
+async fn show_status(custom_pid: Option<&PathBuf>, port: u16) -> AnyhowResult<()> {
+    let pid_file = PidFile::new(custom_pid);
+    
+    if let Some(pid) = pid_file.read()? {
+        if is_process_running(pid) {
+            eprintln!("Server is running (PID: {})", pid);
+            eprintln!("PID file: {}", pid_file.path.display());
+            
+            // Try to get more info by checking port
+            if find_server_by_port(port).await?.is_some() {
+                eprintln!("HTTP API: http://localhost:{}", port);
+            }
+        } else {
+            eprintln!("Server is not running (stale PID file)");
+            pid_file.remove()?;
+        }
+    } else if let Some(pid) = find_server_by_port(port).await? {
         eprintln!("Server is running (PID: {}) but no PID file found", pid);
-        eprintln!("HTTP API: http://localhost:8080");
+        eprintln!("HTTP API: http://localhost:{}", port);
     } else {
         eprintln!("Server is not running");
     }
@@ -244,71 +292,22 @@ async fn show_status(custom_pid: Option<&PathBuf>) -> AnyhowResult<()> {
     Ok(())
 }
 
-async fn is_server_running(custom_pid: Option<&PathBuf>) -> AnyhowResult<bool> {
-    let pid_file = get_pid_file_path(custom_pid);
-    
-    if pid_file.exists() {
-        let pid_str = fs::read_to_string(&pid_file)?;
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            if is_process_running(pid) {
-                return Ok(true);
-            } else {
-                // Clean up stale PID file
-                fs::remove_file(&pid_file)?;
-            }
-        }
-    }
-    
-    // Check by port as fallback
-    Ok(find_server_by_port(8080).await?.is_some())
-}
-
-fn get_pid_file_path(custom: Option<&PathBuf>) -> PathBuf {
-    if let Some(path) = custom {
-        return path.clone();
-    }
-    pid_file_path()
-}
-
 fn is_process_running(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // Use external `kill -0 <pid>` to probe for process existence without unsafe
-        match Command::new("kill").args(["-0", &pid.to_string()]).output() {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Fallback to sysinfo on Windows
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            false,
-            sysinfo::ProcessRefreshKind::new(),
-        );
-        system.process(Pid::from(pid as usize)).is_some()
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            false,
-            sysinfo::ProcessRefreshKind::new(),
-        );
-        system.process(Pid::from(pid as usize)).is_some()
-    }
+    let mut system = System::new();
+    let pid_val = Pid::from(pid as usize);
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid_val]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
+    system.process(pid_val).is_some()
 }
 
 async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
     // This is a simplified implementation
     // In practice, you'd want to check netstat or similar
     let output_result = Command::new("lsof")
-        .args(&["-t", &format!("-i:{}", port)])
+        .args(["-t", &format!("-i:{}", port)])
         .output();
 
     let output = match output_result {
@@ -321,10 +320,6 @@ async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
         Err(e) => return Err(e.into()),
     };
 
-    eprintln!("lsof output status: {}", output.status);
-    eprintln!("lsof stdout: {:?}", String::from_utf8_lossy(&output.stdout));
-    eprintln!("lsof stderr: {:?}", String::from_utf8_lossy(&output.stderr));
-
     if output.status.success() && !output.stdout.is_empty() {
         let pid_str = String::from_utf8(output.stdout)?;
         if let Ok(pid) = pid_str.trim().parse::<u32>() {
@@ -336,23 +331,18 @@ async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
 }
 
 fn terminate_process(pid: u32) -> AnyhowResult<()> {
-    if !is_process_running(pid) {
-        return Ok(());
-    }
+    let mut system = System::new();
+    let pid_val = Pid::from(pid as usize);
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid_val]),
+        true,
+        sysinfo::ProcessRefreshKind::nothing(),
+    );
     
-    #[cfg(unix)]
-    {
-        // Send TERM signal via external `kill` to avoid unsafe
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .output()?;
-    }
-    
-    #[cfg(windows)]
-    {
-        Command::new("taskkill")
-            .args(&["/PID", &pid.to_string(), "/F"])
-            .output()?;
+    if let Some(process) = system.process(pid_val) {
+        let _ = process.kill();
+        // Give it a moment to actually die
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
     
     Ok(())
@@ -369,11 +359,10 @@ fn pid_file_path() -> PathBuf {
                 // Fallback as a last resort
                 PathBuf::from("/tmp")
             });
-        return base
-            .join("Library")
+        base.join("Library")
             .join("Application Support")
             .join("embed-tool")
-            .join("embed-tool.pid");
+            .join("embed-tool.pid")
     }
 
     #[cfg(target_os = "windows")]
@@ -475,30 +464,32 @@ mod tests {
     #[tokio::test]
     async fn test_is_server_running_no_pid_file() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_is_running.pid");
+        let pid_path = temp_dir.path().join("test_is_running.pid");
+        let pid_file = PidFile::new(Some(&pid_path));
 
         // Should return false when no PID file exists and no server is running on port 8080
-        let result = is_server_running(Some(&pid_file)).await;
+        let result = pid_file.is_running();
         assert!(result.is_ok());
+        assert!(!result.unwrap());
     }
 
     #[tokio::test]
     async fn test_show_status_no_server() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_status.pid");
+        let pid_path = temp_dir.path().join("test_status.pid");
 
         // Should not panic
-        let result = show_status(Some(&pid_file)).await;
+        let result = show_status(Some(&pid_path), 8080).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_stop_server_no_pid_file() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_stop.pid");
+        let pid_path = temp_dir.path().join("test_stop.pid");
 
         // Should not panic
-        let result = stop_server(Some(&pid_file)).await;
+        let result = stop_server(Some(&pid_path), 8080).await;
         assert!(result.is_ok());
     }
 
@@ -557,7 +548,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_server_command_restart() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_restart.pid");
+        let pid_path = temp_dir.path().join("test_restart.pid");
         
         let args = StartArgs {
             port: 8082, // Use different port
@@ -567,15 +558,15 @@ mod tests {
             default_model: "potion-32M".to_string(),
             mcp: false,
             daemon: true, // Use daemon mode to avoid hanging
-            pid_file: Some(pid_file.clone()),
+            pid_file: Some(pid_path.clone()),
         };
 
         // Restart with daemon=true should not block, but let's use timeout anyway for safety
         let result = tokio::time::timeout(tokio::time::Duration::from_millis(500), handle_server_command(ServerAction::Restart(args), None)).await;
         
         // Clean up any PID file
-        if pid_file.exists() {
-             let _ = std::fs::remove_file(&pid_file);
+        if pid_path.exists() {
+             let _ = std::fs::remove_file(&pid_path);
         }
         
         assert!(result.is_ok());
@@ -694,7 +685,7 @@ mod tests {
         
         // Clean up socket file if created
         if socket_path.exists() {
-            let _ = fs::remove_file(&socket_path);
+            let _ = std::fs::remove_file(&socket_path);
         }
         
         // Test passes if we got here without hanging
@@ -704,7 +695,7 @@ mod tests {
     #[tokio::test]
     async fn test_start_daemon_basic() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_daemon.pid");
+        let pid_path = temp_dir.path().join("test_daemon.pid");
         
         let args = StartArgs {
             port: 8086,
@@ -714,15 +705,15 @@ mod tests {
             default_model: "potion-32M".to_string(),
             mcp: false,
             daemon: true,
-            pid_file: Some(pid_file.clone()),
+            pid_file: Some(pid_path.clone()),
         };
 
         // This will try to spawn a daemon process
         let result = start_daemon(args).await;
         
         // Clean up any PID file that might have been created
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
         
         // The result depends on whether the process can actually be spawned
@@ -732,7 +723,7 @@ mod tests {
     #[tokio::test]
     async fn test_start_daemon_with_mcp() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_daemon_mcp.pid");
+        let pid_path = temp_dir.path().join("test_daemon_mcp.pid");
         
         let args = StartArgs {
             port: 8087,
@@ -742,14 +733,14 @@ mod tests {
             default_model: "potion-32M".to_string(),
             mcp: true,
             daemon: true,
-            pid_file: Some(pid_file.clone()),
+            pid_file: Some(pid_path.clone()),
         };
 
         let result = start_daemon(args).await;
         
         // Clean up
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
         
         assert!(result.is_ok() || result.is_err());
@@ -771,9 +762,9 @@ mod tests {
         let result = start_daemon(args).await;
         
         // Clean up default PID file
-        let default_pid_file = pid_file_path();
-        if default_pid_file.exists() {
-            let _ = fs::remove_file(&default_pid_file);
+        let pid_file = PidFile::new(None);
+        if pid_file.path.exists() {
+            let _ = std::fs::remove_file(&pid_file.path);
         }
         
         assert!(result.is_ok() || result.is_err());
@@ -782,137 +773,144 @@ mod tests {
     #[tokio::test]
     async fn test_stop_server_with_valid_pid_file() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_stop_valid.pid");
+        let pid_path = temp_dir.path().join("test_stop_valid.pid");
+        let pid_file = PidFile::new(Some(&pid_path));
         
         // Create a PID file with a non-existent PID
-        fs::write(&pid_file, "999999").unwrap();
+        pid_file.write(999999).unwrap();
         
-        let result = stop_server(Some(&pid_file)).await;
+        let result = stop_server(Some(&pid_path), 8080).await;
         
         // Should succeed even if process doesn't exist
         assert!(result.is_ok());
         
         // PID file should be removed
-        assert!(!pid_file.exists());
+        assert!(!pid_path.exists());
     }
 
     #[tokio::test]
     async fn test_stop_server_invalid_pid_file() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_stop_invalid.pid");
+        let pid_path = temp_dir.path().join("test_stop_invalid.pid");
         
         // Create a PID file with invalid content
-        fs::write(&pid_file, "not_a_number").unwrap();
+        std::fs::write(&pid_path, "not_a_number").unwrap();
         
-        let result = stop_server(Some(&pid_file)).await;
+        let result = stop_server(Some(&pid_path), 8080).await;
         
         // Should handle parse error gracefully
         assert!(result.is_err());
         
         // Clean up
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
     }
 
     #[tokio::test]
     async fn test_show_status_with_stale_pid() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_status_stale.pid");
+        let pid_path = temp_dir.path().join("test_status_stale.pid");
+        let pid_file = PidFile::new(Some(&pid_path));
         
         // Create a PID file with a non-existent PID
-        fs::write(&pid_file, "999999").unwrap();
+        pid_file.write(999999).unwrap();
         
-        let result = show_status(Some(&pid_file)).await;
+        let result = show_status(Some(&pid_path), 8080).await;
         assert!(result.is_ok());
         
         // PID file should be removed due to stale PID
-        assert!(!pid_file.exists());
+        assert!(!pid_path.exists());
     }
 
     #[tokio::test]
     async fn test_show_status_with_valid_pid() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_status_valid.pid");
+        let pid_path = temp_dir.path().join("test_status_valid.pid");
+        let pid_file = PidFile::new(Some(&pid_path));
         
         // Use current process PID (should be running)
         let current_pid = std::process::id();
-        fs::write(&pid_file, current_pid.to_string()).unwrap();
+        pid_file.write(current_pid).unwrap();
         
-        let result = show_status(Some(&pid_file)).await;
+        let result = show_status(Some(&pid_path), 8080).await;
         assert!(result.is_ok());
         
         // Clean up
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
     }
 
     #[tokio::test]
     async fn test_show_status_invalid_pid_file_content() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_status_invalid.pid");
+        let pid_path = temp_dir.path().join("test_status_invalid.pid");
         
         // Create a PID file with invalid content
-        fs::write(&pid_file, "invalid_pid").unwrap();
+        std::fs::write(&pid_path, "invalid_pid").unwrap();
         
-        let result = show_status(Some(&pid_file)).await;
+        let result = show_status(Some(&pid_path), 8080).await;
         assert!(result.is_ok());
         
         // Clean up
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
     }
 
     #[tokio::test]
     async fn test_is_server_running_with_stale_pid() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_running_stale.pid");
+        let pid_path = temp_dir.path().join("test_running_stale.pid");
+        let pid_file = PidFile::new(Some(&pid_path));
         
         // Create a PID file with a non-existent PID
-        fs::write(&pid_file, "999999").unwrap();
+        pid_file.write(999999).unwrap();
         
-        let result = is_server_running(Some(&pid_file)).await;
+        let result = pid_file.is_running();
         assert!(result.is_ok());
+        assert!(!result.unwrap());
         
         // PID file should be cleaned up
-        assert!(!pid_file.exists());
+        assert!(!pid_path.exists());
     }
 
     #[tokio::test]
     async fn test_is_server_running_with_valid_pid() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_running_valid.pid");
+        let pid_path = temp_dir.path().join("test_running_valid.pid");
+        let pid_file = PidFile::new(Some(&pid_path));
         
         // Use current process PID
         let current_pid = std::process::id();
-        fs::write(&pid_file, current_pid.to_string()).unwrap();
+        pid_file.write(current_pid).unwrap();
         
-        let result = is_server_running(Some(&pid_file)).await;
+        let result = pid_file.is_running();
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), true);
         
         // Clean up
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
     }
 
     #[tokio::test]
     async fn test_is_server_running_invalid_pid_content() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let pid_file = temp_dir.path().join("test_running_invalid.pid");
+        let pid_path = temp_dir.path().join("test_running_invalid.pid");
         
         // Create PID file with invalid content
-        fs::write(&pid_file, "not_a_number").unwrap();
+        std::fs::write(&pid_path, "not_a_number").unwrap();
         
-        let result = is_server_running(Some(&pid_file)).await;
-        assert!(result.is_ok());
+        let pid_file = PidFile::new(Some(&pid_path));
+        let result = pid_file.is_running();
+        assert!(result.is_err());
         
         // Clean up
-        if pid_file.exists() {
-            let _ = fs::remove_file(&pid_file);
+        if pid_path.exists() {
+            let _ = std::fs::remove_file(&pid_path);
         }
     }
 

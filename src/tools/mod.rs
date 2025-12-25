@@ -63,6 +63,12 @@ pub struct EmbedParams {
     pub input: String,
     #[schemars(description = "Model to use for embedding (optional, defaults to potion-32M)")]
     pub model: Option<String>,
+    #[schemars(description = "Target dimensions for output embeddings (optional, not yet implemented)")]
+    pub dimensions: Option<usize>,
+    #[schemars(description = "Encoding format for embeddings (optional, defaults to float)")]
+    pub encoding_format: Option<String>,
+    #[schemars(description = "User identifier for tracking and analytics (optional)")]
+    pub user: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
@@ -71,6 +77,12 @@ pub struct BatchEmbedParams {
     pub inputs: Vec<String>,
     #[schemars(description = "Model to use for embedding (optional, defaults to potion-32M)")]
     pub model: Option<String>,
+    #[schemars(description = "Target dimensions for output embeddings (optional, not yet implemented)")]
+    pub dimensions: Option<usize>,
+    #[schemars(description = "Encoding format for embeddings (optional, defaults to float)")]
+    pub encoding_format: Option<String>,
+    #[schemars(description = "User identifier for tracking and analytics (optional)")]
+    pub user: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
@@ -90,23 +102,6 @@ pub struct ModelDistillParams {
     pub output_name: String,
     #[schemars(description = "Number of dimensions for PCA compression (optional, defaults to 128)")]
     pub dimensions: Option<usize>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct EmbeddingResponse {
-    pub embedding: Vec<f32>,
-    pub model: String,
-    pub dimensions: usize,
-    pub processing_time_ms: u64,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct BatchEmbeddingResponse {
-    pub embeddings: Vec<Vec<f32>>,
-    pub model: String,
-    pub dimensions: usize,
-    pub processing_time_ms: u64,
-    pub input_count: usize,
 }
 
 #[derive(Clone)]
@@ -133,7 +128,7 @@ impl EmbeddingService {
 
     /// Generate embeddings for a single text input
     pub async fn embed(&self, params: EmbedParams) -> Result<CallToolResult, McpError> {
-        let EmbedParams { input, model } = params;
+        let EmbedParams { input, model, .. } = params;
         let start_time = Instant::now();
 
         counter!("embedtool.tools.embed").increment(1);
@@ -165,17 +160,22 @@ impl EmbeddingService {
                 )
             })?;
 
-        let embeddings = model_instance.encode(&[input.clone()]);
+        let embeddings = model_instance.encode(std::slice::from_ref(&input));
         if let Some(embedding) = embeddings.first() {
             let duration = start_time.elapsed();
             let dimensions = embedding.len();
+            let prompt_tokens = (input.len() + 3) / 4;
 
-                    let response = EmbeddingResponse {
-                        embedding: embedding.clone(),
-                        model: model_name.clone(),
-                        dimensions,
-                        processing_time_ms: duration.as_millis() as u64,
-                    };
+            let response = serde_json::json!({
+                "embedding": embedding,
+                "model": model_name,
+                "dimensions": dimensions,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "total_tokens": prompt_tokens
+                },
+                "processing_time_ms": duration.as_millis()
+            });
 
             info!(
                 connection_id = %self.connection_id,
@@ -197,7 +197,7 @@ impl EmbeddingService {
 
     /// Generate embeddings for multiple text inputs in batch
     pub async fn batch_embed(&self, params: BatchEmbedParams) -> Result<CallToolResult, McpError> {
-        let BatchEmbedParams { inputs, model } = params;
+        let BatchEmbedParams { inputs, model, .. } = params;
         let start_time = Instant::now();
         
         counter!("embedtool.tools.batch_embed").increment(1);
@@ -229,17 +229,58 @@ impl EmbeddingService {
                 )
             })?;
 
-        let batch_embeddings = model_instance.encode(&inputs);
+        // Generate embeddings with optional parallel chunking for large batches
+        let batch_embeddings: Vec<Vec<f32>> = if inputs.len() <= 32 {
+            // Small batch: encode directly
+            model_instance.encode(&inputs)
+        } else {
+            // Large batch: split into chunks of 32 and process in parallel
+            use futures::future::join_all;
+            use tokio::task::spawn_blocking;
+
+            let chunk_size = 32;
+            let chunks: Vec<_> = inputs.chunks(chunk_size).collect();
+            let mut chunk_futures = Vec::new();
+
+            for chunk in chunks {
+                let chunk_vec: Vec<String> = chunk.to_vec();
+                let model_clone = model_instance.clone();
+                chunk_futures.push(spawn_blocking(move || model_clone.encode(&chunk_vec)));
+            }
+
+            let results = join_all(chunk_futures).await;
+            let mut all_embeddings = Vec::new();
+
+            for result in results {
+                match result {
+                    Ok(embeddings) => all_embeddings.extend(embeddings),
+                    Err(e) => {
+                        error!("Spawn blocking failed during batch embed: {}", e);
+                        return Err(McpError::internal_error(
+                            "Embedding generation failed".to_string(),
+                            None
+                        ));
+                    }
+                }
+            }
+            all_embeddings
+        };
+
         let duration = start_time.elapsed();
         let dimensions = batch_embeddings.first().map(|e| e.len()).unwrap_or(0);
+        let prompt_tokens: usize = inputs.iter().map(|s| (s.len() + 3) / 4).sum();
 
-        let response = BatchEmbeddingResponse {
-            embeddings: batch_embeddings,
-            model: model_name.clone(),
-            dimensions,
-            processing_time_ms: duration.as_millis() as u64,
-            input_count: inputs.len(),
-        };
+        let response = serde_json::json!({
+            "embeddings": batch_embeddings,
+            "model": model_name,
+            "dimensions": dimensions,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": prompt_tokens
+            },
+            "processing_time_ms": duration.as_millis(),
+            "input_count": inputs.len()
+        });
 
         info!(
             connection_id = %self.connection_id,
@@ -659,6 +700,9 @@ mod tests {
         let params = EmbedParams {
             input: "Hello world".to_string(),
             model: Some("potion-32M".to_string()),
+            dimensions: None,
+            encoding_format: None,
+            user: None,
         };
         
         // Test that it can be serialized to JSON
@@ -677,6 +721,9 @@ mod tests {
         let params = BatchEmbedParams {
             inputs: vec!["Hello".to_string(), "world".to_string()],
             model: None,
+            dimensions: None,
+            encoding_format: None,
+            user: None,
         };
         
         let json = serde_json::to_string(&params).unwrap();
@@ -742,45 +789,43 @@ mod tests {
     }
 
     #[test]
-    fn test_embedding_response_structure() {
-        let response = EmbeddingResponse {
-            embedding: vec![0.1, 0.2, 0.3],
-            model: "test-model".to_string(),
-            dimensions: 3,
-            processing_time_ms: 150,
-        };
+    fn test_embedding_response_content() {
+        let embedding = vec![0.1, 0.2, 0.3];
+        let response = serde_json::json!({
+            "embedding": embedding,
+            "model": "test-model",
+            "dimensions": 3,
+            "usage": {
+                "prompt_tokens": 1,
+                "total_tokens": 1
+            },
+            "processing_time_ms": 150
+        });
         
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("test-model"));
         assert!(json.contains("150"));
-        assert!(json.contains("0.1"));
-        
-        let deserialized: EmbeddingResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.embedding.len(), 3);
-        assert_eq!(deserialized.model, "test-model");
-        assert_eq!(deserialized.dimensions, 3);
-        assert_eq!(deserialized.processing_time_ms, 150);
+        assert!(json.contains("usage"));
     }
 
     #[test]
-    fn test_batch_embedding_response_structure() {
-        let response = BatchEmbeddingResponse {
-            embeddings: vec![vec![0.1, 0.2], vec![0.3, 0.4]],
-            model: "batch-model".to_string(),
-            dimensions: 2,
-            processing_time_ms: 200,
-            input_count: 2,
-        };
+    fn test_batch_embedding_response_content() {
+        let response = serde_json::json!({
+            "embeddings": vec![vec![0.1, 0.2], vec![0.3, 0.4]],
+            "model": "batch-model",
+            "dimensions": 2,
+            "usage": {
+                "prompt_tokens": 2,
+                "total_tokens": 2
+            },
+            "processing_time_ms": 200,
+            "input_count": 2
+        });
         
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("batch-model"));
-        assert!(json.contains("200"));
-        assert!(json.contains("2"));
-        
-        let deserialized: BatchEmbeddingResponse = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.embeddings.len(), 2);
-        assert_eq!(deserialized.input_count, 2);
-        assert_eq!(deserialized.processing_time_ms, 200);
+        assert!(json.contains("input_count"));
+        assert!(json.contains("usage"));
     }
 
     #[test]
@@ -788,6 +833,9 @@ mod tests {
         let params = EmbedParams {
             input: "test".to_string(),
             model: None,
+            dimensions: None,
+            encoding_format: None,
+            user: None,
         };
         
         assert!(params.model.is_none());
@@ -799,6 +847,9 @@ mod tests {
         let params = BatchEmbedParams {
             inputs: vec![],
             model: None,
+            dimensions: None,
+            encoding_format: None,
+            user: None,
         };
         
         assert_eq!(params.inputs.len(), 0);
@@ -823,33 +874,6 @@ mod tests {
         };
         
         assert_eq!(params.dimensions, Some(256));
-    }
-
-    #[test]
-    fn test_embedding_response_zero_time() {
-        let response = EmbeddingResponse {
-            embedding: vec![],
-            model: "test".to_string(),
-            dimensions: 0,
-            processing_time_ms: 0,
-        };
-        
-        assert_eq!(response.processing_time_ms, 0);
-        assert_eq!(response.embedding.len(), 0);
-    }
-
-    #[test]
-    fn test_batch_embedding_response_zero_inputs() {
-        let response = BatchEmbeddingResponse {
-            embeddings: vec![],
-            model: "test".to_string(),
-            dimensions: 0,
-            processing_time_ms: 0,
-            input_count: 0,
-        };
-        
-        assert_eq!(response.input_count, 0);
-        assert_eq!(response.embeddings.len(), 0);
     }
 
     #[test]

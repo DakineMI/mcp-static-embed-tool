@@ -49,18 +49,18 @@ use std::path::PathBuf;
 
 /// Top-level configuration structure.
 #[derive(Serialize, Deserialize, Default)]
-struct Config {
-    server: ServerConfig,
-    models: ModelConfig,
-    logging: LoggingConfig,
+pub struct Config {
+    pub server: ServerConfig,
+    pub models: ModelConfig,
+    pub logging: LoggingConfig,
 }
 
 /// Server-specific configuration.
 #[derive(Serialize, Deserialize)]
-struct ServerConfig {
-    default_port: u16,
-    default_bind: String,
-    default_model: String,
+pub struct ServerConfig {
+    pub default_port: u16,
+    pub default_bind: String,
+    pub default_model: String,
 }
 
 impl Default for ServerConfig {
@@ -74,19 +74,19 @@ impl Default for ServerConfig {
 }
 
 #[derive(Serialize, Deserialize, Default)]
-struct ModelConfig {
-    models_dir: Option<String>,
-    auto_download: bool,
-    default_distill_dims: usize,
+pub struct ModelConfig {
+    pub models_dir: Option<String>,
+    pub auto_download: bool,
+    pub default_distill_dims: usize,
 }
 
 #[derive(Serialize, Deserialize)]
-struct LoggingConfig {
-    level: String,
-    file: Option<String>,
-    json_format: bool,
-    max_file_size: Option<u64>,
-    max_files: Option<u32>,
+pub struct LoggingConfig {
+    pub level: String,
+    pub file: Option<String>,
+    pub json_format: bool,
+    pub max_file_size: Option<u64>,
+    pub max_files: Option<u32>,
 }
 
 impl Default for LoggingConfig {
@@ -147,15 +147,15 @@ pub async fn handle_embed_command(
                         if let Some(data) = result
                             .get("data")
                             .and_then(|d| d.as_array())
-                            .and_then(|arr| arr.get(0))
+                            .and_then(|arr| arr.first())
                         {
                             if let Some(embedding) =
                                 data.get("embedding").and_then(|e| e.as_array())
                             {
                                 println!("embedding");
-                                for value in embedding {
+                                for (i, value) in embedding.iter().enumerate() {
                                     if let Some(num) = value.as_f64() {
-                                        print!("{:.6},", num);
+                                        print!("{:.6}{}", num, if i < embedding.len() - 1 { "," } else { "" });
                                     }
                                 }
                                 println!();
@@ -489,7 +489,7 @@ fn get_config_path(config_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn std:
     Ok(PathBuf::from(home).join(".embed-tool").join("config.toml"))
 }
 
-fn load_config(config_path: Option<PathBuf>) -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_config(config_path: Option<PathBuf>) -> Result<Config, Box<dyn std::error::Error>> {
     let config_file_path = get_config_path(config_path)?;
 
     if !config_file_path.exists() {

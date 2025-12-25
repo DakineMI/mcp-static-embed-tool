@@ -26,6 +26,7 @@ futures = "*"
 tower-http = { version = "*", features = ["trace", "cors"] }
 uuid = { version = "*", features = ["serde", "v4"] }
 ulid-rs = "*"
+sysinfo = "*"
 tokio = { version = "*", features = [
     "signal",
     "rt-multi-thread",

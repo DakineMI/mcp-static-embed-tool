@@ -433,19 +433,16 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     
     // Initialize logging based on verbosity
-    {
-        if cli.verbose {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::DEBUG)
-                .with_writer(std::io::stderr)
-                .init();
-        } else {
-            tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::INFO)
-                .with_writer(std::io::stderr)
-                .init();
-        }
-    }
+    let level = if cli.verbose {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
+
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_writer(std::io::stderr)
+        .try_init();
     
     match cli.command {
         Commands::Server { action } => {

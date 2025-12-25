@@ -34,11 +34,11 @@ COPY --link . .
 
 FROM build AS build-debug
 
-RUN . /opt/rh/gcc-toolset-13/enable && cargo build && cp /static-embed-tool/target/debug/static_embedding_server /static-embed-tool/static_embedding_server
+RUN . /opt/rh/gcc-toolset-13/enable && cargo build && cp /static-embed-tool/target/debug/static_embedding-tool /static-embed-tool/static_embedding-tool
 
 RUN rm -rf /static-embed-tool/target /static-embed-tool/src /static-embed-tool/Cargo.*
 
-RUN chmod +x /static-embed-tool/static_embedding_server
+RUN chmod +x /static-embed-tool/static_embedding-tool
 
 ###
 # STAGE: build-release
@@ -47,11 +47,11 @@ RUN chmod +x /static-embed-tool/static_embedding_server
 
 FROM build AS build-release
 
-RUN . /opt/rh/gcc-toolset-13/enable && cargo build --release && cp /static-embed-tool/target/release/static_embedding_server /static-embed-tool/static_embedding_server
+RUN . /opt/rh/gcc-toolset-13/enable && cargo build --release && cp /static-embed-tool/target/release/static_embedding-tool /static-embed-tool/static_embedding-tool
 
 RUN rm -rf /static-embed-tool/target /static-embed-tool/src /static-embed-tool/Cargo.*
 
-RUN chmod +x /static-embed-tool/static_embedding_server
+RUN chmod +x /static-embed-tool/static_embedding-tool
 
 ###
 # STAGE: tzdata
@@ -68,7 +68,7 @@ RUN apk add --no-cache tzdata
 
 FROM cgr.dev/chainguard/glibc-dynamic:latest-dev AS dev
 
-COPY --from=build-debug /static-embed-tool/static_embedding_server /static_embedding_server
+COPY --from=build-debug /static-embed-tool/static_embedding-tool /static_embedding-tool
 
 COPY --from=tzdata /usr/share/zoneinfo /usr/share/zoneinfo
 
@@ -85,14 +85,14 @@ RUN mkdir /data /logs \
 
 VOLUME /data /logs
 
-ENTRYPOINT ["/static_embedding_server"]
+ENTRYPOINT ["/static_embedding-tool"]
 
 #
 # Production image (built locally)
 #
 FROM cgr.dev/chainguard/glibc-dynamic:latest AS prod
 
-COPY --from=build-release /static-embed-tool/static_embedding_server /static_embedding_server
+COPY --from=build-release /static-embed-tool/static_embedding-tool /static_embedding-tool
 
 COPY --from=tzdata /usr/share/zoneinfo /usr/share/zoneinfo
 
@@ -104,4 +104,4 @@ COPY --from=dev /logs /logs
 
 VOLUME /data /logs
 
-ENTRYPOINT ["/static_embedding_server"]
+ENTRYPOINT ["/static_embedding-tool"]

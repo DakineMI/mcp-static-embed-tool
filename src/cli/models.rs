@@ -45,7 +45,7 @@ use chrono;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 
 /// Model registry for tracking installed models.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 struct ModelRegistry {
     models: HashMap<String, ModelInfo>,
 }
@@ -100,8 +100,8 @@ async fn list_models() -> AnyhowResult<()> {
         return Ok(());
     }
     
-    println!("{:<20} {:<15} {:<12} {:<10} {}", 
-             "NAME", "SOURCE", "DIMENSIONS", "SIZE", "DESCRIPTION");
+    println!("{:<20} {:<15} {:<12} {:<10} DESCRIPTION", 
+             "NAME", "SOURCE", "DIMENSIONS", "SIZE");
     println!("{}", "-".repeat(80));
     
     for (name, info) in &registry.models {
@@ -475,14 +475,6 @@ fn get_directory_size(path: &PathBuf) -> Option<f64> {
         Some(metadata.len() as f64 / 1024.0 / 1024.0)
     } else {
         None
-    }
-}
-
-impl Default for ModelRegistry {
-    fn default() -> Self {
-        Self {
-            models: HashMap::new(),
-        }
     }
 }
 

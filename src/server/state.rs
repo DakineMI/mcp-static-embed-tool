@@ -137,11 +137,12 @@ impl Model for StaticModel {
 #[derive(Clone)]
 pub struct MockModel {
     pub name: String,
+    pub dimensions: usize,
 }
 
 impl MockModel {
-    pub fn new(name: String) -> Self {
-        Self { name }
+    pub fn new(name: String, dimensions: usize) -> Self {
+        Self { name, dimensions }
     }
 }
 
@@ -149,8 +150,7 @@ impl Model for MockModel {
     fn encode(&self, inputs: &[String]) -> Vec<Vec<f32>> {
         // Return mock embeddings: fixed-size vectors with simple patterns
         inputs.iter().enumerate().map(|(i, _)| {
-            // Create a 384-dimensional embedding with a simple pattern based on index
-            (0..384).map(|j| {
+            (0..self.dimensions).map(|j| {
                 // Simple pattern: mix of sine waves and index-based values
                 let base = (i as f32 * 0.1 + j as f32 * 0.01).sin();
                 let variation = (i as f32 + j as f32) * 0.001;
@@ -282,11 +282,11 @@ impl AppState {
             warn!("No models could be loaded from registry or built-in sources. Creating mock models for development/testing.");
             models.insert(
                 "potion-8M".to_string(),
-                Arc::new(MockModel::new("potion-8M".to_string())),
+                Arc::new(MockModel::new("potion-8M".to_string(), 8)),
             );
             models.insert(
                 "potion-32M".to_string(),
-                Arc::new(MockModel::new("potion-32M".to_string())),
+                Arc::new(MockModel::new("potion-32M".to_string(), 32)),
             );
             loaded_count = 2;
         }
@@ -323,7 +323,7 @@ mod tests {
         // Create a mock model for testing
         models.insert(
             "test-model".to_string(),
-            Arc::new(MockModel::new("test-model".to_string())),
+            Arc::new(MockModel::new("test-model".to_string(), 384)),
         );
         let startup_time = SystemTime::now();
 

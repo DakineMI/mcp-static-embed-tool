@@ -23,10 +23,18 @@ fn make_state() -> Arc<AppState> {
 #[tokio::test]
 async fn embeddings_handler_happy_path() {
     let state = make_state();
-    let req = EmbeddingRequest { input: vec!["hi".into(), "there".into()], model: None };
+    let req = EmbeddingRequest { 
+        input: vec!["hi".into(), "there".into()], 
+        model: None,
+        dimensions: None,
+        encoding_format: None,
+        user: None,
+    };
     let params = QueryParams { model: None };
     let res = server::embeddings_handler(axum::extract::State(state), Query(params), Json(req)).await;
-    let axum::response::Json(resp) = res;
+    let Ok(axum::response::Json(resp)) = res else {
+        panic!("Handler returned error: {:?}", res.err());
+    };
     assert_eq!(resp.data.len(), 2);
     assert_eq!(resp.data[0].embedding, vec![1.0, 2.0]);
     assert_eq!(resp.model, "default");
