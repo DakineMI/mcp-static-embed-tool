@@ -398,25 +398,16 @@ mod tests {
     }
     #[tokio::test]
     async fn test_spawn_test_server_health() {
-        let server_handle = spawn_test_server().await;
+        let (bind_address, handle) = spawn_test_server().await;
         let client = reqwest::Client::new();
         let response = client
-            .get(format!("http://{}/health", server_handle.bind_address))
+            .get(format!("http://{}/health", bind_address))
             .send()
             .await
             .expect("Failed to send request");
         assert!(response.status().is_success());
         let body = response.text().await.expect("Failed to read response body");
         assert_eq!(body, "OK");
-        server_handle.shutdown().await;
+        handle.abort();
     }
-} 
-
-
-
-
-
-
-
-
-
+} // Code doeds not go on the line following a righ tcurly brace

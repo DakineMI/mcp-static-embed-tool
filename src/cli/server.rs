@@ -550,6 +550,7 @@ mod tests {
             socket_path: None,
             models: Some("potion-32M".to_string()),
             default_model: "potion-32M".to_string(),
+            mcp: false,
             daemon: true, // Use daemon mode to avoid hanging
             pid_file: Some(pid_file.clone()),
         };
@@ -574,6 +575,8 @@ mod tests {
             socket_path: None,
             models: None, // No models specified
             default_model: "potion-32M".to_string(),
+            mcp: false,
+            daemon: false,
             pid_file: None,
         };
 
