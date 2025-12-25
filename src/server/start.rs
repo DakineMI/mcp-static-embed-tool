@@ -333,9 +333,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_spawn_test_server_health() {
-
-    #[tokio::test]
     async fn test_start_http_server_successful_startup() {
         let temp_dir = TempDir::new().unwrap();
         let _db_path = temp_dir
@@ -399,4 +396,27 @@ mod tests {
         // Either it times out (still running) or returns due to cancellation; both exercise dispatch
         assert!(result.is_ok() || result.is_err());
     }
-}
+    #[tokio::test]
+    async fn test_spawn_test_server_health() {
+        let server_handle = spawn_test_server().await;
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{}/health", server_handle.bind_address))
+            .send()
+            .await
+            .expect("Failed to send request");
+        assert!(response.status().is_success());
+        let body = response.text().await.expect("Failed to read response body");
+        assert_eq!(body, "OK");
+        server_handle.shutdown().await;
+    }
+} 
+
+
+
+
+
+
+
+
+
