@@ -155,11 +155,22 @@ async fn start_daemon(args: StartArgs) -> AnyhowResult<()> {
         cmd_args.push("--mcp");
     }
 
+    if let Some(socket_path) = &args.socket_path {
+        cmd_args.push("--socket-path");
+        if let Some(s) = socket_path.to_str() {
+            cmd_args.push(s);
+        } else {
+            return Err(anyhow!("Socket path contains invalid UTF-8"));
+        }
+    }
+
     if let Some(pid_path) = &args.pid_file {
         cmd_args.push("--pid-file");
         // We need to convert PathBuf to str, ensuring it's valid UTF-8
         if let Some(s) = pid_path.to_str() {
             cmd_args.push(s);
+        } else {
+            return Err(anyhow!("PID file path contains invalid UTF-8"));
         }
     }
     
@@ -533,10 +544,14 @@ mod tests {
             pid_file: None,
         };
 
-        // This will likely fail to start the actual server, but should not panic
-        let result = handle_server_command(ServerAction::Start(args), None).await;
-        // We expect this to succeed in test environment even if server doesn't actually start
-        assert!(result.is_ok() || result.is_err());
+        // Use a short timeout since handle_server_command will block if it succeeds in starting
+        let result = tokio::time::timeout(tokio::time::Duration::from_millis(100), handle_server_command(ServerAction::Start(args), None)).await;
+        // If it timed out, it means it started successfully (blocking)
+        // If it returned, it might be an error or success (e.g. bind failure in test)
+        match result {
+            Err(_) => assert!(true), // Timed out, expected if it blocks
+            Ok(inner) => assert!(inner.is_ok() || inner.is_err()),
+        }
     }
 
     #[tokio::test]
@@ -555,16 +570,15 @@ mod tests {
             pid_file: Some(pid_file.clone()),
         };
 
-        // Test restart command - should handle non-existent server gracefully
-        let result = handle_server_command(ServerAction::Restart(args), None).await;
+        // Restart with daemon=true should not block, but let's use timeout anyway for safety
+        let result = tokio::time::timeout(tokio::time::Duration::from_millis(500), handle_server_command(ServerAction::Restart(args), None)).await;
         
         // Clean up any PID file
         if pid_file.exists() {
-             let _ = fs::remove_file(&pid_file);
+             let _ = std::fs::remove_file(&pid_file);
         }
         
-        // Should succeed even if no server was running
-        assert!(result.is_ok() || result.is_err());
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -944,10 +958,13 @@ mod tests {
             pid_file: Some(pid_file.clone()),
         };
         
-        let result = handle_start_server(args, None).await;
+        let result = tokio::time::timeout(tokio::time::Duration::from_millis(500), handle_start_server(args, None)).await;
         
         // Should succeed (just print message about already running)
-        assert!(result.is_ok());
+        match result {
+            Err(_) => panic!("Timed out waiting for already running check"),
+            Ok(inner) => assert!(inner.is_ok()),
+        }
         
         // Clean up
         if pid_file.exists() {

@@ -428,10 +428,18 @@ mod tests {
         }
     }
 
+    // Mock model for API tests with predictable output
+    struct ApiMockModel;
+    impl Model for ApiMockModel {
+        fn encode(&self, inputs: &[String]) -> Vec<Vec<f32>> {
+            inputs.iter().map(|_| vec![0.1, 0.2, 0.3]).collect()
+        }
+    }
+
     fn create_test_app_state() -> Arc<AppState> {
         let mut models: HashMap<String, Arc<dyn Model>> = HashMap::new();
-        models.insert("potion-32M".to_string(), Arc::new(MockModel::new("potion-32M".to_string())));
-        models.insert("test-model".to_string(), Arc::new(MockModel::new("test-model".to_string())));
+        models.insert("potion-32M".to_string(), Arc::new(ApiMockModel));
+        models.insert("test-model".to_string(), Arc::new(ApiMockModel));
 
         Arc::new(AppState {
             models,
