@@ -129,6 +129,9 @@ curl -X POST http://localhost.8080/v1/embeddings \
 - **Expected a type, found a trait**: When encountering this error, consider adding the `dyn` keyword if a trait object is intended (`dyn `).
 - **`?` couldn't convert the error: `str: StdError` is not satisfied**: This error arises when using the `?` operator on a `Result` where the error type is a `&str`. The `?` operator attempts to convert the error into an `anyhow::Error`, but `&str` does not implement the `StdError` trait, which is required for this conversion. To fix this, use `map_err` to convert the `&str` into an `anyhow::Error` using `map_err(|e| anyhow::anyhow!(e))`.
 - **The error occurs because the `crate::utils::distill` function returns a `Result` with `Box<dyn StdError>`, which lacks the `Send`, `Sync`, and `Sized` traits required for automatic conversion to `anyhow::Error` via `?`. To fix this, wrap the error in `anyhow::anyhow!` using `map_err` before propagating it.**
+- **Missing generics for struct `axum::http::Response`**: Ensure the return type includes the `Body` generic, e.g., `Response<Body>`.
+- **Incorrect number of generic arguments for `GovernorLayer`**: Ensure all three generic type arguments are supplied: the key extractor, the middleware, and the state store type (e.g., `GovernorLayer<RobustIpKeyExtractor, NoOpMiddleware, KeyedStateStore<String>>`).
+- **Mismatched Types with `GovernorLayer`**: If you encounter mismatched types with `GovernorLayer`, where the expected type is `GovernorLayer<_, _, dashmap::DashMap<std::string::String, InMemoryState>>` but the found type is `GovernorLayer<_, _, Body>`, this indicates a type mismatch in the return type. This can be resolved by ensuring the correct state store type (`InMemoryState`) is used when initializing the `GovernorLayer`.
 
 **Key Log Messages**:
 
@@ -376,3 +379,13 @@ To fix this, the user can install a provider via code by calling `CryptoProvider
 **When encountering `failed to resolve: use of unresolved module or unlinked crate \`rand\``, add the `rand` crate to `Cargo.toml` using `cargo add rand`.**
 **When encountering `failed to resolve: use of unresolved module or unlinked crate EnvFilter`, add `tracing-subscriber = { version = "0.3", features = ["env-filter"] }` to `Cargo.toml` using `cargo add tracing-subscriber --features env-filter`.**
 **When encountering an unused assignment to `router` before it's reassigned, chain the router methods directly on `Router::new()` for cleaner, immutable code.**
+
+## WORKFLOW & RELEASE RULES
+
+- When asked to squash the commit history, use the command `git log --oneline` to view the commit history.
+- After squashing the commit history, use the following commands to complete the process:
+  - `git reset --soft <hash-of-oldest-commit>` (to reset the index to the oldest commit)
+  - `git commit -m "Squashed commit history"` (to create a new commit with the squashed history)
+  - `git push --force-with-lease origin main` (to force push the changes to the remote repository)
+  - Be aware that force pushing can affect collaborators and should be done carefully. If you have any concerns, consider creating a new branch instead.
+</rules-file
