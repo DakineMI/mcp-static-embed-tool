@@ -164,7 +164,7 @@ impl EmbeddingService {
         if let Some(embedding) = embeddings.first() {
             let duration = start_time.elapsed();
             let dimensions = embedding.len();
-            let prompt_tokens = (input.len() + 3) / 4;
+            let prompt_tokens = input.len().div_ceil(4);
 
             let response = serde_json::json!({
                 "embedding": embedding,
@@ -268,7 +268,7 @@ impl EmbeddingService {
 
         let duration = start_time.elapsed();
         let dimensions = batch_embeddings.first().map(|e| e.len()).unwrap_or(0);
-        let prompt_tokens: usize = inputs.iter().map(|s| (s.len() + 3) / 4).sum();
+        let prompt_tokens: usize = inputs.iter().map(|s| s.len().div_ceil(4)).sum();
 
         let response = serde_json::json!({
             "embeddings": batch_embeddings,

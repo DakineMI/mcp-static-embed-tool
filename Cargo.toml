@@ -2,6 +2,14 @@
 name = "static-embedding-tool"
 version = "1.0.0"
 edition = "2024"
+description = "High-performance static embedding server with Model2Vec integration and MCP capabilities"
+license = "BSL-1.1"
+repository = "https://github.com/dakinemi/static-embedding-tool"
+homepage = "https://github.com/dakinemi/static-embedding-tool"
+documentation = "https://docs.rs/static-embedding-tool"
+keywords = ["embeddings", "ml", "ai", "mcp", "server"]
+categories = ["science", "api-bindings"]
+exclude = [".specstory/", "data/", "*.log"]
 
 [features]
 default = ["cli", "mcp"]
@@ -9,30 +17,30 @@ cli = ["dep:clap", "dep:sysinfo", "dep:tracing-subscriber"]
 mcp = ["dep:axum", "dep:rmcp", "dep:tower-http", "dep:sysinfo", "dep:metrics", "dep:tracing-subscriber"]
 
 [dependencies]
-axum = { version = "*", features = ["json", "macros"], optional = true }
-clap = { version = "*", features = ["derive"], optional = true }
-serde = { version = "*", features = ["derive"] }
-serde_json = "*"
-anyhow = "*"
-thiserror = "*"
-model2vec-rs = "*"
-hf-hub = "*"
-reqwest = { version = "*", features = [
+axum = { version = "0.7", features = ["json", "macros"], optional = true }
+clap = { version = "4.4", features = ["derive"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+model2vec-rs = "0.1"
+hf-hub = "0.3"
+reqwest = { version = "0.12", features = [
     "json",
     "rustls-tls",
 ], default-features = false }
-tracing = "*"
-tracing-subscriber = { version = "*", features = ["env-filter"], optional = true }
-toml = "*"
-tempfile = "*"
-rand = "*"
-metrics = { version = "*", optional = true }
-futures = "*"
-tower-http = { version = "*", features = ["trace", "cors"], optional = true }
-uuid = { version = "*", features = ["serde", "v4"] }
-ulid-rs = "*"
-sysinfo = { version = "*", optional = true }
-tokio = { version = "*", features = [
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+toml = "0.8"
+tempfile = "3.8"
+rand = "0.8"
+metrics = { version = "0.23", optional = true }
+futures = "0.3"
+tower-http = { version = "0.5", features = ["trace", "cors"], optional = true }
+uuid = { version = "1.6", features = ["serde", "v4"] }
+ulid-rs = "0.2"
+sysinfo = { version = "0.30", optional = true }
+tokio = { version = "1.0", features = [
     "signal",
     "rt-multi-thread",
     "tracing",
@@ -41,9 +49,9 @@ tokio = { version = "*", features = [
     "bytes",
     "process",
 ] }
-chrono = { version = "*", features = ["serde"] }
-schemars = { version = "*", features = ["derive"] }
-rmcp = { version = "*", features = [
+chrono = { version = "0.4", features = ["serde"] }
+schemars = { version = "0.8", features = ["derive"] }
+rmcp = { version = "0.1", features = [
     "axum",
     "transport-streamable-http-server",
     "transport-streamable-http-server-session",

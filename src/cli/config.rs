@@ -174,7 +174,7 @@ pub async fn handle_embed_command(
     // Fallback to local embedding
     match run_local_embedding(&[args.text], model_name).await {
         Ok(embeddings) => {
-            let prompt_tokens = (embeddings.len() + 3) / 4;
+            let prompt_tokens = embeddings.len().div_ceil(4);
             let result = json!({
                 "object": "list",
                 "data": embeddings.into_iter().enumerate().map(|(i, e)| {
@@ -216,18 +216,15 @@ fn display_embedding_result(result: &serde_json::Value, format: &str) -> Result<
                 .get("data")
                 .and_then(|d| d.as_array())
                 .and_then(|arr| arr.first())
+                && let Some(embedding) = data.get("embedding").and_then(|e| e.as_array())
             {
-                if let Some(embedding) = 
-                    data.get("embedding").and_then(|e| e.as_array())
-                {
-                    println!("embedding");
-                    for (i, value) in embedding.iter().enumerate() {
-                        if let Some(num) = value.as_f64() {
-                            print!("{:.6}{}", num, if i < embedding.len() - 1 { "," } else { "" });
-                        }
+                println!("embedding");
+                for (i, value) in embedding.iter().enumerate() {
+                    if let Some(num) = value.as_f64() {
+                        print!("{:.6}{}", num, if i < embedding.len() - 1 { "," } else { "" });
                     }
-                    println!();
                 }
+                println!();
             }
         }
         _ => {

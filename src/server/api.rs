@@ -203,7 +203,7 @@ pub async fn embeddings_handler(
         .collect();
 
     // Approximate token usage (roughly 4 characters per token)
-    let prompt_tokens: usize = request.input.iter().map(|s| (s.len() + 3) / 4).sum();
+    let prompt_tokens: usize = request.input.iter().map(|s| s.len().div_ceil(4)).sum();
 
     let response = EmbeddingResponse {
         object: "list".to_string(),

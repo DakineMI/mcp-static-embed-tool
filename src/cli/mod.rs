@@ -485,16 +485,20 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
             handle_server_command(action, cli.config).await.map_err(Into::into)
         }
         Commands::Model { action } => {
-            handle_model_command(action, cli.config).await.map_err(Into::into)
+            handle_model_command(action, cli.config).await?;
+            Ok(())
         }
         Commands::Config { action } => {
-            handle_config_command(action, cli.config).await.map_err(Into::into)
+            handle_config_command(action, cli.config).await?;
+            Ok(())
         }
         Commands::Embed(args) => {
-            handle_embed_command(args, cli.config).await.map_err(Into::into)
+            handle_embed_command(args, cli.config).await?;
+            Ok(())
         }
         Commands::Batch(args) => {
-            handle_batch_command(args, cli.config).await.map_err(Into::into)
+            handle_batch_command(args, cli.config).await?;
+            Ok(())
         }
     }
 }
