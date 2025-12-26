@@ -14,7 +14,7 @@ fn init_logger() {
 #[test]
 fn parse_server_start_args() {
     init_logger();
-    let args = vec!["embed-tool", "server", "start", "--port", "7070", "--bind", "127.0.0.1"];    
+    let args = vec!["static-embedding-tool", "server", "start", "--port", "7070", "--bind", "127.0.0.1"];    
     let cli = Cli::try_parse_from(args).unwrap();
     match cli.command {
         Commands::Server { action: ServerAction::Start(start) } => {

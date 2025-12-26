@@ -413,7 +413,18 @@ impl EmbeddingService {
         
         counter!("embedtool.tools.distill_model").increment(1);
         
-        let dims = dimensions.unwrap_or(128);
+        let dims = if let Some(d) = dimensions {
+            d
+        } else {
+            // Heuristic based on model name
+            if input_model.contains("32M") {
+                32
+            } else if input_model.contains("8M") {
+                8
+            } else {
+                32 // Default
+            }
+        };
         
         info!(
             connection_id = %self.connection_id,
@@ -604,22 +615,17 @@ impl ServerHandler for EmbeddingService {
             Tool {
                 name: "distill_model".into(),
                 description: Some(r#"
-                Distill a new Model2Vec model from an existing model using PCA compression.
-
-                This function creates a new compressed Model2Vec model using PCA dimensionality
-                reduction. This is useful for creating smaller, faster models for deployment while
-                maintaining most of the semantic quality.
-
-                The distillation process:
-                1. Loads the source model
-                2. Applies PCA to reduce dimensions
-                3. Saves the new model with the specified name
-                4. Loads the new model into the service
-
-                Examples:
-                - distill_model("sentence-transformers/all-MiniLM-L6-v2", "my-mini-model")  # Default 128 dims
-                - distill_model("microsoft/codebert-base", "code-128", Some(128))  # Custom dimensions
-                - distill_model("potion-32M", "potion-64", Some(64))  # Compress existing model
+    /// Distills a pre-trained model into a more efficient Model2Vec model.
+    /// 
+    /// This process:
+    ///   1. Downloads the source model (if needed)
+    ///   2. Applies PCA to reduce dimensions (automatically adjusted based on model name if not provided)
+    ///   3. Registers the new model in the local registry
+    /// 
+    /// Examples:
+    /// - distill_model("minishlab/potion-base-8M", "my-mini-model")  # Auto-sets 8 dims
+    /// - distill_model("minishlab/potion-base-32M", "my-model")      # Auto-sets 32 dims
+    /// - distill_model("microsoft/codebert-base", "code-32", Some(32))  # Custom dimensions
                 "#.into()),
                 input_schema: Arc::new(serde_json::from_value(serde_json::to_value(schemars::schema_for!(ModelDistillParams)).unwrap()).unwrap()),
                 output_schema: None,

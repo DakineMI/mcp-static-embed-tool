@@ -1,44 +1,44 @@
 //! Configuration management for the embedding server.
-//!
+//! 
 //! This module implements the `config` subcommand and handles persistent configuration
 //! in TOML format with environment variable overrides.
-//!
+//! 
 //! ## Configuration Hierarchy
-//!
+//! 
 //! Settings are resolved in the following priority order (highest to lowest):
-//!
+//! 
 //! 1. Command-line arguments (e.g., `--port 9090`)
 //! 2. Environment variables (e.g., `EMBED_TOOL_SERVER_PORT=9090`)
-//! 3. Configuration file (`~/.config/embed-tool/config.toml`)
+//! 3. Configuration file (`~/.config/static-embedding-tool/config.toml`)
 //! 4. Built-in defaults
-//!
+//! 
 //! ## Configuration Sections
-//!
+//! 
 //! - **Server**: Port, bind address, default model
 //! - **Models**: Model paths, cache directory, auto-download settings
 //! - **Logging**: Log levels, output format, file rotation
-//!
+//! 
 //! ## Examples
-//!
+//! 
 //! ```bash
 //! # Show current configuration
-//! embed-tool config get
-//!
+//! static-embedding-tool config get
+//! 
 //! # Set a value
-//! embed-tool config set server.default_port 9090
-//!
+//! static-embedding-tool config set server.default_port 9090
+//! 
 //! # Reset to defaults
-//! embed-tool config reset
-//!
+//! static-embedding-tool config reset
+//! 
 //! # Show config file location
-//! embed-tool config path
+//! static-embedding-tool config path
 //! ```
-//!
+//! 
 //! ## Environment Variables
-//!
+//! 
 //! All config keys can be overridden via environment variables with the prefix
 //! `EMBED_TOOL_` and uppercase section.key format:
-//!
+//! 
 //! - `EMBED_TOOL_SERVER_PORT=9090`
 //! - `EMBED_TOOL_MODELS_CACHE_DIR=/custom/path`
 
@@ -66,18 +66,28 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            default_port: 8080,
-            default_bind: "0.0.0.0".to_string(),
+            default_port: 8084,
+            default_bind: "127.0.0.1".to_string(),
             default_model: "potion-32M".to_string(),
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 pub struct ModelConfig {
     pub models_dir: Option<String>,
     pub auto_download: bool,
-    pub default_distill_dims: usize,
+    pub default_distill_dims: Option<usize>,
+}
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            models_dir: None,
+            auto_download: true,
+            default_distill_dims: None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -115,13 +125,15 @@ pub async fn handle_config_command(
 
 pub async fn handle_embed_command(
     args: EmbedArgs,
-    _config_path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use reqwest::Client;
     use serde_json::{Value, json};
 
+    let config = load_config(config_path)?;
+    let port = config.server.default_port;
     let client = Client::new();
-    let url = "http://localhost:8080/v1/embeddings";
+    let url = format!("http://localhost:{}/v1/embeddings", port);
 
     let model_name = args.model.as_deref().unwrap_or("potion-32M");
 
@@ -131,67 +143,146 @@ pub async fn handle_embed_command(
         "encoding_format": if args.format == "json" { "float" } else { &args.format }
     });
 
-    println!("🔍 Embedding text using model '{}'...", model_name);
-    println!("  Text: \"{}\"", args.text);
+    if config.logging.level == "debug" || config.logging.level == "trace" {
+        eprintln!("🔍 Embedding text using model '{}'...", model_name);
+        eprintln!("  Text: \"{}\"", args.text);
+    }
 
-    match client.post(url).json(&request_body).send().await {
+    // Try to use the server first
+    match client.post(&url).json(&request_body).send().await {
         Ok(response) => {
             let status = response.status();
             if status.is_success() {
                 let result: Value = response.json().await?;
-                match args.format.as_str() {
-                    "json" => {
-                        println!("{}", serde_json::to_string_pretty(&result)?);
-                    }
-                    "csv" => {
-                        if let Some(data) = result
-                            .get("data")
-                            .and_then(|d| d.as_array())
-                            .and_then(|arr| arr.first())
-                        {
-                            if let Some(embedding) =
-                                data.get("embedding").and_then(|e| e.as_array())
-                            {
-                                println!("embedding");
-                                for (i, value) in embedding.iter().enumerate() {
-                                    if let Some(num) = value.as_f64() {
-                                        print!("{:.6}{}", num, if i < embedding.len() - 1 { "," } else { "" });
-                                    }
-                                }
-                                println!();
-                            }
-                        }
-                    }
-                    _ => {
-                        println!("{}", serde_json::to_string_pretty(&result)?);
-                    }
+                display_embedding_result(&result, &args.format)?;
+                if config.logging.level == "debug" || config.logging.level == "trace" {
+                    eprintln!("✓ Embedding completed successfully (via server)");
                 }
-                println!("✓ Embedding completed successfully");
+                return Ok(());
             } else {
                 let error_text = response.text().await?;
-                eprintln!("❌ Server error ({}): {}", status, error_text);
-                eprintln!("\nMake sure the server is running:");
-                eprintln!("  embed-tool server start");
+                eprintln!("⚠️  Server error ({}): {}", status, error_text);
+            }
+        }
+        Err(_) => {
+            if config.logging.level == "debug" || config.logging.level == "trace" {
+                eprintln!("ℹ️  Server not reachable on http://localhost:{}, attempting local embedding...", port);
+            }
+        }
+    }
+
+    // Fallback to local embedding
+    match run_local_embedding(&[args.text], model_name).await {
+        Ok(embeddings) => {
+            let prompt_tokens = (embeddings.len() + 3) / 4;
+            let result = json!({
+                "object": "list",
+                "data": embeddings.into_iter().enumerate().map(|(i, e)| {
+                    json!({
+                        "object": "embedding",
+                        "embedding": e,
+                        "index": i
+                    })
+                }).collect::<Vec<_>>(),
+                "model": model_name,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "total_tokens": prompt_tokens
+                }
+            });
+            display_embedding_result(&result, &args.format)?;
+            if config.logging.level == "debug" || config.logging.level == "trace" {
+                eprintln!("✓ Embedding completed successfully (local)");
             }
         }
         Err(e) => {
-            eprintln!("❌ Failed to connect to server: {}", e);
-            eprintln!("Make sure the server is running on http://localhost:8080");
-            eprintln!("  embed-tool server start");
+            eprintln!("❌ Local embedding failed: {}", e);
+            eprintln!("\nMake sure the model is downloaded or the server is running:");
+            eprintln!("  static-embedding-tool model download {}", model_name);
+            eprintln!("  static-embedding-tool server start");
         }
     }
 
     Ok(())
 }
 
+fn display_embedding_result(result: &serde_json::Value, format: &str) -> Result<(), Box<dyn std::error::Error>> {
+    match format {
+        "json" => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        "csv" => {
+            if let Some(data) = result
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|arr| arr.first())
+            {
+                if let Some(embedding) = 
+                    data.get("embedding").and_then(|e| e.as_array())
+                {
+                    println!("embedding");
+                    for (i, value) in embedding.iter().enumerate() {
+                        if let Some(num) = value.as_f64() {
+                            print!("{:.6}{}", num, if i < embedding.len() - 1 { "," } else { "" });
+                        }
+                    }
+                    println!();
+                }
+            }
+        }
+        _ => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    }
+    Ok(())
+}
+
+async fn run_local_embedding(inputs: &[String], model_name: &str) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error>> {
+    use model2vec_rs::model::StaticModel;
+    
+    // Determine model path
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "Could not determine home directory")?;
+    
+    let model_path = std::path::PathBuf::from(home)
+        .join(".static-embedding-tool")
+        .join("models")
+        .join(model_name);
+
+    if !model_path.exists() {
+        // Check for built-in name mapping
+        let hf_id = match model_name {
+            "potion-8M" => "minishlab/potion-base-8M",
+            "potion-32M" => "minishlab/potion-base-32M",
+            _ => return Err(format!("Model path '{}' does not exist and no built-in mapping found", model_path.display()).into()),
+        };
+        
+        // Try to load from HF directly or return error
+        let model = tokio::task::spawn_blocking(move || {
+            StaticModel::from_pretrained(hf_id, None, None, None)
+        }).await??;
+        return Ok(model.encode(inputs));
+    }
+
+    let model = tokio::task::spawn_blocking(move || {
+        StaticModel::from_pretrained(&model_path, None, None, None)
+    }).await??;
+    
+    Ok(model.encode(inputs))
+}
+
 pub async fn handle_batch_command(
     args: BatchArgs,
-    _config_path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use reqwest::Client;
     use serde_json::{Value, json};
     use std::fs;
     use std::io::Write;
+
+    let config = load_config(config_path)?;
+    let port = config.server.default_port;
 
     // Check if input file exists
     if !args.input.exists() {
@@ -217,132 +308,156 @@ pub async fn handle_batch_command(
         return Ok(());
     }
 
-    let client = Client::new();
-    let url = "http://localhost:8080/v1/embeddings";
-    let model_name = args.model.as_deref().unwrap_or("potion-32M");
-
-    println!(
-        "🔍 Processing {} texts in batches of {} using model '{}'...",
-        input_data.len(),
-        args.batch_size,
-        model_name
-    );
-    println!("  Input: {}", args.input.display());
-    if let Some(output) = &args.output {
-        println!("  Output: {}", output.display());
-    }
-
-    let mut all_embeddings = Vec::new();
-    let mut processed = 0;
-
-    // Process in batches
-    for chunk in input_data.chunks(args.batch_size) {
-        let request_body = json!({
-            "input": chunk,
-            "model": model_name,
-            "encoding_format": "float"
-        });
-
-        match client.post(url).json(&request_body).send().await {
-            Ok(response) => {
-                let status = response.status();
-                if status.is_success() {
-                    let result: Value = response.json().await?;
-                    if let Some(data) = result.get("data").and_then(|d| d.as_array()) {
-                        for item in data {
-                            if let Some(embedding) =
-                                item.get("embedding").and_then(|e| e.as_array())
-                            {
-                                let embedding_vec: Vec<f32> = embedding
-                                    .iter()
-                                    .filter_map(|v| v.as_f64())
-                                    .map(|v| v as f32)
-                                    .collect();
-                                all_embeddings.push(embedding_vec);
+        let client = Client::new();
+        let url = format!("http://localhost:{}/v1/embeddings", port);
+        let model_name = args.model.as_deref().unwrap_or("potion-32M");
+    
+        if config.logging.level == "debug" || config.logging.level == "trace" {
+            eprintln!(
+                "🔍 Processing {} texts in batches of {} using model '{}'...",
+                input_data.len(),
+                args.batch_size,
+                model_name
+            );
+            eprintln!("  Input: {}", args.input.display());
+            if let Some(output) = &args.output {
+                eprintln!("  Output: {}", output.display());
+            }
+        }
+    
+        let mut all_embeddings = Vec::new();
+        
+        // Try server first
+        let mut use_local = false;
+        for chunk in input_data.chunks(args.batch_size) {
+            let request_body = json!({
+                "input": chunk,
+                "model": model_name,
+                "encoding_format": "float"
+            });
+    
+            match client.post(&url).json(&request_body).send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        let result: Value = response.json().await?;
+                        if let Some(data) = result.get("data").and_then(|d| d.as_array()) {
+                            for item in data {
+                                if let Some(embedding) =
+                                    item.get("embedding").and_then(|e| e.as_array())
+                                {
+                                    let embedding_vec: Vec<f32> = embedding
+                                        .iter()
+                                        .filter_map(|v| v.as_f64())
+                                        .map(|v| v as f32)
+                                        .collect();
+                                    all_embeddings.push(embedding_vec);
+                                }
+                            }
+                            if config.logging.level == "debug" || config.logging.level == "trace" {
+                                eprintln!("  ✓ Processed {}/{} texts (via server)", all_embeddings.len(), input_data.len());
                             }
                         }
-                        processed += chunk.len();
-                        println!("  ✓ Processed {}/{} texts", processed, input_data.len());
+                    } else {
+                        let error_text = response.text().await?;
+                        eprintln!("⚠️  Server error ({}): {}", status, error_text);
+                        use_local = true;
+                        break;
                     }
-                } else {
-                    let error_text = response.text().await?;
-                    eprintln!("❌ Server error ({}): {}", status, error_text);
-                    eprintln!("\nMake sure the server is running:");
-                    eprintln!("  embed-tool server start");
+                }
+                Err(_) => {
+                    if config.logging.level == "debug" || config.logging.level == "trace" {
+                        eprintln!("ℹ️  Server not reachable, falling back to local processing...");
+                    }
+                    use_local = true;
+                    break;
+                }
+            }
+        }
+    
+        if use_local {
+            all_embeddings.clear();
+            match run_local_embedding(&input_data, model_name).await {
+                Ok(embeddings) => {
+                    all_embeddings = embeddings;
+                    if config.logging.level == "debug" || config.logging.level == "trace" {
+                        eprintln!("  ✓ Processed {} texts (local)", all_embeddings.len());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ Local batch processing failed: {}", e);
                     return Ok(());
                 }
             }
-            Err(e) => {
-                eprintln!("❌ Failed to connect to server: {}", e);
-                eprintln!("Make sure the server is running on http://localhost:8080");
-                eprintln!("  embed-tool server start");
-                return Ok(());
-            }
         }
-    }
-
-    // Output results
-    if let Some(output_path) = &args.output {
-        match args.format.as_str() {
-            "json" => {
-                let output_data = json!({
-                    "model": model_name,
-                    "embeddings": all_embeddings,
-                    "input_count": input_data.len(),
-                    "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
-                });
-                fs::write(output_path, serde_json::to_string_pretty(&output_data)?)?;
-            }
-            "csv" => {
-                let mut file = fs::File::create(output_path)?;
-                // Write header
-                writeln!(file, "index,embedding")?;
-                for (i, embedding) in all_embeddings.iter().enumerate() {
-                    write!(file, "{}", i)?;
-                    for value in embedding {
-                        write!(file, ",{:.6}", value)?;
+    
+        // Output results
+        if let Some(output_path) = &args.output {
+            match args.format.as_str() {
+                "json" => {
+                    let output_data = json!({
+                        "model": model_name,
+                        "embeddings": all_embeddings,
+                        "input_count": input_data.len(),
+                        "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
+                    });
+                    fs::write(output_path, serde_json::to_string_pretty(&output_data)?)?;
+                }
+                "csv" => {
+                    let mut file = fs::File::create(output_path)?;
+                    // Write header
+                    writeln!(file, "index,embedding")?;
+                    for (i, embedding) in all_embeddings.iter().enumerate() {
+                        write!(file, "{}", i)?;
+                        for value in embedding {
+                            write!(file, ",{:.6}", value)?;
+                        }
+                        writeln!(file)?;
                     }
-                    writeln!(file)?;
+                }
+                "npy" => {
+                    // For NPY format, we'd need the npy crate, but for now just save as JSON
+                    eprintln!("⚠️  NPY format not yet supported, saving as JSON instead");
+                    let output_data = json!({
+                        "model": model_name,
+                        "embeddings": all_embeddings,
+                        "input_count": input_data.len(),
+                        "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
+                    });
+                    let npy_path = output_path.with_extension("json");
+                    fs::write(&npy_path, serde_json::to_string_pretty(&output_data)?)?;
+                    if config.logging.level == "debug" || config.logging.level == "trace" {
+                        eprintln!(
+                            "✓ Results saved to {} (NPY format not implemented)",
+                            npy_path.display()
+                        );
+                    }
+                }
+                _ => {
+                    eprintln!("❌ Unsupported output format: {}", args.format);
+                    return Ok(());
                 }
             }
-            "npy" => {
-                // For NPY format, we'd need the npy crate, but for now just save as JSON
-                eprintln!("⚠️  NPY format not yet supported, saving as JSON instead");
-                let output_data = json!({
-                    "model": model_name,
-                    "embeddings": all_embeddings,
-                    "input_count": input_data.len(),
-                    "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
-                });
-                let npy_path = output_path.with_extension("json");
-                fs::write(&npy_path, serde_json::to_string_pretty(&output_data)?)?;
-                println!(
-                    "✓ Results saved to {} (NPY format not implemented)",
-                    npy_path.display()
-                );
+            if config.logging.level == "debug" || config.logging.level == "trace" {
+                eprintln!("✓ Results saved to {}", output_path.display());
             }
-            _ => {
-                eprintln!("❌ Unsupported output format: {}", args.format);
-                return Ok(());
-            }
+        } else {
+            // Print to stdout
+            let output_data = json!({
+                "model": model_name,
+                "embeddings": all_embeddings,
+                "input_count": input_data.len(),
+                "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
+            });
+            println!("{}", serde_json::to_string_pretty(&output_data)?);
         }
-        println!("✓ Results saved to {}", output_path.display());
-    } else {
-        // Print to stdout
-        let output_data = json!({
-            "model": model_name,
-            "embeddings": all_embeddings,
-            "input_count": input_data.len(),
-            "dimensions": all_embeddings.first().map(|e| e.len()).unwrap_or(0)
-        });
-        println!("{}", serde_json::to_string_pretty(&output_data)?);
+    
+        if config.logging.level == "debug" || config.logging.level == "trace" {
+            eprintln!("✓ Batch processing completed successfully");
+        }
+    
+        Ok(())
     }
-
-    println!("✓ Batch processing completed successfully");
-
-    Ok(())
-}
-
 async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(config_path)?;
     let config_file_path = get_config_path(None)?;
@@ -362,7 +477,7 @@ async fn show_config(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::er
     println!("auto_download = {}", config.models.auto_download);
     println!(
         "default_distill_dims = {}",
-        config.models.default_distill_dims
+        config.models.default_distill_dims.map(|d| d.to_string()).unwrap_or_else(|| "default".to_string())
     );
 
     println!("\n[logging]");
@@ -408,7 +523,7 @@ async fn set_config(
             config.models.auto_download = value.parse()?;
         }
         ["models", "default_distill_dims"] => {
-            config.models.default_distill_dims = value.parse()?;
+            config.models.default_distill_dims = Some(value.parse()?);
         }
         ["logging", "level"] => {
             if ["trace", "debug", "info", "warn", "error"].contains(&value.as_str()) {
@@ -486,7 +601,7 @@ fn get_config_path(config_path: Option<PathBuf>) -> Result<PathBuf, Box<dyn std:
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| "Could not determine home directory")?;
 
-    Ok(PathBuf::from(home).join(".embed-tool").join("config.toml"))
+    Ok(PathBuf::from(home).join(".static-embedding-tool").join("config.toml"))
 }
 
 pub fn load_config(config_path: Option<PathBuf>) -> Result<Config, Box<dyn std::error::Error>> {
@@ -537,6 +652,8 @@ mod tests {
             text: "Hello test".to_string(),
             model: None,
             format: "json".to_string(),
+            watch: false,
+            daemon: false,
         };
         let result = handle_embed_command(args, None).await;
         assert!(result.is_ok());
@@ -551,6 +668,8 @@ mod tests {
             model: Some("potion-8M".to_string()),
             format: "json".to_string(),
             batch_size: 32,
+            watch: false,
+            daemon: false,
         };
         let result = handle_batch_command(args, None).await;
         assert!(result.is_ok());
@@ -579,8 +698,8 @@ mod tests {
 
         let config = load_config(Some(custom)).unwrap();
         // Check default values
-        assert_eq!(config.server.default_port, 8080);
-        assert_eq!(config.server.default_bind, "0.0.0.0");
+        assert_eq!(config.server.default_port, 8084);
+        assert_eq!(config.server.default_bind, "127.0.0.1");
         assert_eq!(config.server.default_model, "potion-32M");
         assert_eq!(config.logging.level, "info");
     }
@@ -669,6 +788,8 @@ mod tests {
                 text: "Hello test".to_string(),
                 model: Some("potion-32M".to_string()),
                 format: "json".to_string(),
+                watch: false,
+                daemon: false,
             };
             // Should print guidance and return Ok
             let result = handle_embed_command(args, None).await;
@@ -686,6 +807,8 @@ mod tests {
                 model: None,
                 format: "json".to_string(),
                 batch_size: 32,
+                watch: false,
+                daemon: false,
             };
             // Should return Ok after printing error when file missing
             let result = handle_batch_command(args, None).await;
@@ -707,6 +830,8 @@ mod tests {
                 model: Some("potion-32M".to_string()),
                 format: "csv".to_string(),
                 batch_size: 10,
+                watch: false,
+                daemon: false,
             };
             let result = handle_batch_command(args, None).await;
             assert!(result.is_ok());
@@ -735,7 +860,7 @@ mod tests {
             // Create a custom config file in a temp dir
             let temp_dir = TempDir::new().unwrap();
             let custom_config_path = temp_dir.path().join("test_custom_config.toml");
-            let custom_config = r#"
+            let custom_config = r#" 
 [server]
 default_port = 9999
 default_bind = "127.0.0.1"
@@ -743,7 +868,7 @@ default_model = "potion-32M"
 
 [models]
 auto_download = true
-default_distill_dims = 128
+default_distill_dims = 32
 
 [logging]
 level = "info"
@@ -888,8 +1013,7 @@ json_format = false
             assert!(result.is_ok());
 
             let config = load_config(Some(custom)).unwrap();
-            assert_eq!(config.models.default_distill_dims, 256);
-        });
+            assert_eq!(config.models.default_distill_dims, Some(256));        });
     }
 
     #[test]
@@ -899,7 +1023,7 @@ json_format = false
         rt.block_on(async {
             let args = SetConfigArgs {
                 key: "logging.file".to_string(),
-                value: "/var/log/embed-tool.log".to_string(),
+                value: "/var/log/static-embedding-tool.log".to_string(),
             };
             let result = set_config(args, Some(custom.clone())).await;
             assert!(result.is_ok());
@@ -907,7 +1031,7 @@ json_format = false
             let config = load_config(Some(custom)).unwrap();
             assert_eq!(
                 config.logging.file,
-                Some("/var/log/embed-tool.log".to_string())
+                Some("/var/log/static-embedding-tool.log".to_string())
             );
         });
     }
@@ -1018,7 +1142,7 @@ json_format = false
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Test all server config keys to ensure full coverage
-            let test_cases = vec![
+            let test_cases = vec![ 
                 ("server.default_port", "9090"),
                 ("server.default_bind", "127.0.0.1"),
                 ("server.default_model", "test-model"),
@@ -1045,7 +1169,7 @@ json_format = false
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let test_cases = vec![
+            let test_cases = vec![ 
                 ("models.models_dir", "/custom/models/dir"),
                 ("models.auto_download", "false"),
                 ("models.default_distill_dims", "256"),
@@ -1066,7 +1190,7 @@ json_format = false
                 Some("/custom/models/dir".to_string())
             );
             assert_eq!(config.models.auto_download, false);
-            assert_eq!(config.models.default_distill_dims, 256);
+            assert_eq!(config.models.default_distill_dims, Some(256));
         });
     }
 
@@ -1075,7 +1199,7 @@ json_format = false
         let (_dir, custom) = make_temp_config_path();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let test_cases = vec![
+            let test_cases = vec![ 
                 ("logging.level", "debug"),
                 ("logging.file", "/var/log/test.log"),
                 ("logging.json_format", "true"),

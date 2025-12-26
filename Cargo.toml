@@ -1,11 +1,16 @@
 [package]
-name = "static_embedding-tool"
-version = "0.1.1"
+name = "static-embedding-tool"
+version = "1.0.0"
 edition = "2024"
 
+[features]
+default = ["cli", "mcp"]
+cli = ["dep:clap", "dep:sysinfo", "dep:tracing-subscriber"]
+mcp = ["dep:axum", "dep:rmcp", "dep:tower-http", "dep:sysinfo", "dep:metrics", "dep:tracing-subscriber"]
+
 [dependencies]
-axum = { version = "*", features = ["json", "macros"] }
-clap = { version = "*", features = ["derive"] }
+axum = { version = "*", features = ["json", "macros"], optional = true }
+clap = { version = "*", features = ["derive"], optional = true }
 serde = { version = "*", features = ["derive"] }
 serde_json = "*"
 anyhow = "*"
@@ -17,16 +22,16 @@ reqwest = { version = "*", features = [
     "rustls-tls",
 ], default-features = false }
 tracing = "*"
-tracing-subscriber = { version = "*", features = ["env-filter"] }
+tracing-subscriber = { version = "*", features = ["env-filter"], optional = true }
 toml = "*"
 tempfile = "*"
 rand = "*"
-metrics = "*"
+metrics = { version = "*", optional = true }
 futures = "*"
-tower-http = { version = "*", features = ["trace", "cors"] }
+tower-http = { version = "*", features = ["trace", "cors"], optional = true }
 uuid = { version = "*", features = ["serde", "v4"] }
 ulid-rs = "*"
-sysinfo = "*"
+sysinfo = { version = "*", optional = true }
 tokio = { version = "*", features = [
     "signal",
     "rt-multi-thread",
@@ -46,4 +51,4 @@ rmcp = { version = "*", features = [
     "server-side-http",
     "uuid",
     "transport-io",
-] }
+], optional = true }

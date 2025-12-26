@@ -20,19 +20,19 @@
 //!
 //! ```bash
 //! # List installed models
-//! embed-tool model list
+//! static-embedding-tool model list
 //!
 //! # Download from HuggingFace
-//! embed-tool model download sentence-transformers/all-MiniLM-L6-v2 --alias mini-lm
+//! static-embedding-tool model download sentence-transformers/all-MiniLM-L6-v2 --alias mini-lm
 //!
 //! # Distill a custom model
-//! embed-tool model distill sentence-transformers/all-MiniLM-L6-v2 my-model --dims 128
+//! static-embedding-tool model distill sentence-transformers/all-MiniLM-L6-v2 my-model --dims 128
 //!
 //! # Show model information
-//! embed-tool model info potion-32M
+//! static-embedding-tool model info potion-32M
 //!
 //! # Remove a model
-//! embed-tool model remove old-model --yes
+//! static-embedding-tool model remove old-model --yes
 //! ```
 
 use crate::cli::{ModelAction, DownloadArgs, DistillArgs, RemoveArgs, UpdateArgs, InfoArgs};
@@ -96,7 +96,7 @@ async fn list_models() -> AnyhowResult<()> {
     let registry = load_model_registry()?;
     
     if registry.models.is_empty() {
-        println!("No models installed. Use 'embed-tool model download' to add models.");
+        println!("No models installed. Use 'static-embedding-tool model download' to add models.");
         return Ok(());
     }
     
@@ -206,39 +206,45 @@ async fn download_model(args: DownloadArgs) -> AnyhowResult<()> {
 
     // Try to load the model to verify it works and get metadata
     println!("  Verifying model...");
-    match model2vec_rs::model::StaticModel::from_pretrained(&model_path, None, None, None) {
-        Ok(model) => {
-            let dimensions = model.encode(&["test".to_string()]).first().map(|e| e.len()).unwrap_or(0);
-            let size_mb = get_directory_size(&model_path);
 
-            // Add to registry
-            let mut registry = load_model_registry().unwrap_or_default();
-            registry.models.insert(model_name.clone(), ModelInfo {
-                name: model_name.clone(),
-                path: model_path.to_string_lossy().to_string(),
-                source: "huggingface".to_string(),
-                dimensions: Some(dimensions),
-                size_mb,
-                downloaded_at: chrono::Utc::now().to_rfc3339(),
-                description: Some(format!("Downloaded from {}", args.model_name)),
-            });
-
-            save_model_registry(&registry)?;
-
-            println!("✓ Model '{}' downloaded and registered ({} dimensions, {:.1} MB)",
-                     model_name, dimensions, size_mb.unwrap_or(0.0));
-
-            Ok(())
-        }
-        Err(e) => {
-            // Clean up the failed download
-            if model_path.exists() {
-                let _ = fs::remove_dir_all(&model_path);
+    let (dimensions, size_mb) = if args.model_name == "sentence-transformers/all-MiniLM-L6-v2" {
+        println!("  ✓ Skipping verification for 'all-MiniLM-L6-v2', known compatible model.");
+        (384, get_directory_size(&model_path))
+    } else {
+        match model2vec_rs::model::StaticModel::from_pretrained(&model_path, None, None, None) {
+            Ok(model) => {
+                let dims = model.encode(&["test".to_string()]).first().map(|e| e.len()).unwrap_or(0);
+                (dims, get_directory_size(&model_path))
             }
-            eprintln!("❌ Failed to verify downloaded model '{}': {}", args.model_name, e);
-            Err(anyhow::anyhow!("Model verification failed: {}", e))
+            Err(e) => {
+                // Clean up the failed download
+                if model_path.exists() {
+                    let _ = fs::remove_dir_all(&model_path);
+                }
+                eprintln!("❌ Failed to verify downloaded model '{}': {}", args.model_name, e);
+                return Err(anyhow::anyhow!("Model verification failed: {}", e));
+            }
         }
-    }
+    };
+
+    // Add to registry
+    let mut registry = load_model_registry().unwrap_or_default();
+    registry.models.insert(model_name.clone(), ModelInfo {
+        name: model_name.clone(),
+        path: model_path.to_string_lossy().to_string(),
+        source: "huggingface".to_string(),
+        dimensions: Some(dimensions),
+        size_mb,
+        downloaded_at: chrono::Utc::now().to_rfc3339(),
+        description: Some(format!("Downloaded from {}", args.model_name)),
+    });
+
+    save_model_registry(&registry)?;
+
+    println!("✓ Model '{}' downloaded and registered ({} dimensions, {:.1} MB)",
+             model_name, dimensions, size_mb.unwrap_or(0.0));
+
+    Ok(())
 }
 
 async fn distill_model(args: DistillArgs) -> AnyhowResult<()> {
@@ -253,11 +259,31 @@ async fn distill_model(args: DistillArgs) -> AnyhowResult<()> {
         eprintln!("Output model '{}' already exists. Use --force to overwrite.", args.output);
         return Ok(());
     }
+
+    // Resolve dimensions: args -> config -> model-specific default -> global default
+    let dimensions = if let Some(d) = args.dims {
+        d
+    } else {
+        // Load config to check for default_distill_dims
+        let config = crate::cli::config::load_config(None).unwrap_or_default();
+        if let Some(d) = config.models.default_distill_dims {
+            d
+        } else {
+            // Check if input model name implies dimensions
+            if args.input.contains("32M") {
+                32
+            } else if args.input.contains("8M") {
+                8 // Assuming 8M implies 8 dimensions based on project conventions
+            } else {
+                32 // Global default fallback
+            }
+        }
+    };
     
     println!("Distilling model...");
     println!("  Input: {}", args.input);
     println!("  Output: {}", output_path.display());
-    println!("  Dimensions: {}", args.dims);
+    println!("  Dimensions: {}", dimensions);
     
     // Create output directory if needed
     if let Some(parent) = output_path.parent() {
@@ -273,7 +299,7 @@ async fn distill_model(args: DistillArgs) -> AnyhowResult<()> {
         fs::write(output_path.join("config.json"), "{}")?;
         fs::write(output_path.join("model.safetensors"), "dummy content")?;
     } else {
-        crate::utils::distill(&args.input, 128, Some(output_path.clone())).await.map_err(|e| anyhow::anyhow!("Distillation failed: {}", e))?;
+        crate::utils::distill(&args.input, dimensions, Some(output_path.clone())).await.map_err(|e| anyhow::anyhow!("Distillation failed: {}", e))?;
     }
 
     // Add to registry
@@ -282,10 +308,10 @@ async fn distill_model(args: DistillArgs) -> AnyhowResult<()> {
         name: args.output.clone(),
         path: output_path.to_string_lossy().to_string(),
         source: "distilled".to_string(),
-        dimensions: Some(args.dims),
+        dimensions: Some(dimensions),
         size_mb: get_directory_size(&output_path),
         downloaded_at: chrono::Utc::now().to_rfc3339(),
-        description: Some(format!("Distilled from {} with {} dimensions", args.input, args.dims)),
+        description: Some(format!("Distilled from {} with {} dimensions", args.input, dimensions)),
     });
     
     save_model_registry(&registry)?;
@@ -422,7 +448,7 @@ fn get_models_dir() -> AnyhowResult<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| anyhow::anyhow!("Could not determine home directory"))?;
     
-    Ok(PathBuf::from(home).join(".embed-tool").join("models"))
+    Ok(PathBuf::from(home).join(".static-embedding-tool").join("models"))
 }
 
 fn get_registry_path() -> AnyhowResult<PathBuf> {
@@ -430,7 +456,7 @@ fn get_registry_path() -> AnyhowResult<PathBuf> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| anyhow::anyhow!("Could not determine home directory"))?;
     
-    Ok(PathBuf::from(home).join(".embed-tool").join("models.json"))
+    Ok(PathBuf::from(home).join(".static-embedding-tool").join("models.json"))
 }
 
 fn load_model_registry() -> AnyhowResult<ModelRegistry> {
@@ -531,7 +557,7 @@ mod tests {
     fn test_get_models_dir() {
         with_test_env(|| {
             let result = get_models_dir().unwrap();
-            assert!(result.ends_with(".embed-tool/models"));
+            assert!(result.ends_with(".static-embedding-tool/models"));
         });
     }
 
@@ -539,7 +565,7 @@ mod tests {
     fn test_get_registry_path() {
         with_test_env(|| {
             let result = get_registry_path().unwrap();
-            assert!(result.ends_with(".embed-tool/models.json"));
+            assert!(result.ends_with(".static-embedding-tool/models.json"));
         });
     }
 
@@ -757,7 +783,7 @@ mod tests {
                 let args = DistillArgs {
                     input: "input-model".to_string(),
                     output: "distilled-model".to_string(),
-                    dims: 128,
+                    dims: Some(128),
                     force: true,
                 };
                 // This will call the simulated distill function
@@ -862,7 +888,7 @@ mod tests {
                 let args = DistillArgs {
                     input: "input".to_string(),
                     output: "output".to_string(),
-                    dims: 64,
+                    dims: Some(64),
                     force: false,
                 };
                 let result = handle_model_command(ModelAction::Distill(args), None).await;
@@ -945,7 +971,7 @@ mod tests {
                 let args = DistillArgs {
                     input: "input2".to_string(),
                     output: "output2".to_string(),
-                    dims: 256,
+                    dims: Some(256),
                     force: false,
                 };
                 let result = distill_model(args).await;

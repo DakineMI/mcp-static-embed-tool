@@ -22,7 +22,7 @@ use anyhow::{Result as AnyhowResult, anyhow};
 pub struct ServerConfig {
     /// Base URL for the server
     pub server_url: String,
-    /// TCP address to bind (e.g., "0.0.0.0:8080")
+    /// TCP address to bind (e.g., "127.0.0.1:8084")
     pub bind_address: Option<String>,
 }
 

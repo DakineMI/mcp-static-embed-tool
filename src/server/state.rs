@@ -104,7 +104,7 @@ fn get_registry_path() -> Result<PathBuf, anyhow::Error> {
         .or_else(|_| std::env::var("USERPROFILE"))
         .map_err(|_| anyhow!("Could not determine home directory"))?;
 
-    Ok(PathBuf::from(home).join(".embed-tool").join("models.json"))
+    Ok(PathBuf::from(home).join(".static-embedding-tool").join("models.json"))
 }
 
 /// Trait for model operations used in the server.

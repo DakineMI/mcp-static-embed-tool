@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Installation script for Static Embedding Server
-# This script builds and installs the embed-tool binary
+# This script builds and installs the static-embedding-tool binary
 
 set -e
 
@@ -28,7 +28,7 @@ else
 fi
 
 BINARY_PATH="./target/release/static_embedding_server"
-INSTALL_PATH="$INSTALL_DIR/embed-tool"
+INSTALL_PATH="$INSTALL_DIR/static-embedding-tool"
 
 echo "📋 Installing binary to $INSTALL_PATH..."
 cp "$BINARY_PATH" "$INSTALL_PATH"
@@ -36,19 +36,19 @@ chmod +x "$INSTALL_PATH"
 
 echo "✅ Installation complete!"
 echo ""
-echo "🎉 Static Embedding Server installed as 'embed-tool'"
+echo "🎉 Static Embedding Server installed as 'static-embedding-tool'"
 echo ""
 echo "📚 Quick start:"
-echo "   embed-tool --help                    # Show help"
-echo "   embed-tool server start              # Start the server"
-echo "   embed-tool embed \"Hello world\"      # Generate embeddings"
+echo "   static-embedding-tool --help                    # Show help"
+echo "   static-embedding-tool server start              # Start the server"
+echo "   static-embedding-tool embed \"Hello world\"      # Generate embeddings"
 echo ""
 echo "📖 For more information, see the README.md file"
 
 # Add to PATH if not already there
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo ""
-    echo "💡 To use embed-tool from anywhere, add $INSTALL_DIR to your PATH:"
+    echo "💡 To use static-embedding-tool from anywhere, add $INSTALL_DIR to your PATH:"
     if [[ -n "$ZSH_VERSION" ]]; then
         echo "   echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.zshrc"
         echo "   source ~/.zshrc"

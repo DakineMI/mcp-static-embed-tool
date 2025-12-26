@@ -59,7 +59,7 @@ pub async fn distill(
                 .unwrap_or_else(|_| ".".to_string());
 
             PathBuf::from(home)
-                .join(".embed-tool")
+                .join(".static-embedding-tool")
                 .join("models")
                 .join(model_name)
         }
@@ -231,7 +231,7 @@ mod tests {
         // Test default path generation
         let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
         let expected_default = PathBuf::from(home)
-            .join(".embed-tool/models")
+            .join(".static-embedding-tool/models")
             .join("test-model");
 
         let default_path = None;
@@ -240,7 +240,7 @@ mod tests {
                 .or_else(|_| env::var("USERPROFILE"))
                 .unwrap_or_else(|_| ".".to_string());
             PathBuf::from(home)
-                .join(".embed-tool/models")
+                .join(".static-embedding-tool/models")
                 .join("test-model")
         });
 

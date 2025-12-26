@@ -1,6 +1,6 @@
 ###
 # STAGE: builder
-# This stage is used to build the static-embed-tool linux binary
+# This stage is used to build the static-static-embedding-tool linux binary
 ###
 
 FROM docker.io/rockylinux/rockylinux:9 AS builder
@@ -18,40 +18,40 @@ ENTRYPOINT [ "sh" ]
 
 ###
 # STAGE: build
-# This stage is used to build the static-embed-tool linux binary
+# This stage is used to build the static-static-embedding-tool linux binary
 ###
 
 FROM builder AS build
 
-WORKDIR /static-embed-tool
+WORKDIR /static-static-embedding-tool
 
 COPY --link . .
 
 ###
 # STAGE: build-debug
-# This stage is used to build the static-embed-tool linux binary
+# This stage is used to build the static-static-embedding-tool linux binary
 ###
 
 FROM build AS build-debug
 
-RUN . /opt/rh/gcc-toolset-13/enable && cargo build && cp /static-embed-tool/target/debug/static_embedding-tool /static-embed-tool/static_embedding-tool
+RUN . /opt/rh/gcc-toolset-13/enable && cargo build && cp /static-static-embedding-tool/target/debug/static_embedding-tool /static-static-embedding-tool/static_embedding-tool
 
-RUN rm -rf /static-embed-tool/target /static-embed-tool/src /static-embed-tool/Cargo.*
+RUN rm -rf /static-static-embedding-tool/target /static-static-embedding-tool/src /static-static-embedding-tool/Cargo.*
 
-RUN chmod +x /static-embed-tool/static_embedding-tool
+RUN chmod +x /static-static-embedding-tool/static_embedding-tool
 
 ###
 # STAGE: build-release
-# This stage is used to build the static-embed-tool linux binary
+# This stage is used to build the static-static-embedding-tool linux binary
 ###
 
 FROM build AS build-release
 
-RUN . /opt/rh/gcc-toolset-13/enable && cargo build --release && cp /static-embed-tool/target/release/static_embedding-tool /static-embed-tool/static_embedding-tool
+RUN . /opt/rh/gcc-toolset-13/enable && cargo build --release && cp /static-static-embedding-tool/target/release/static_embedding-tool /static-static-embedding-tool/static_embedding-tool
 
-RUN rm -rf /static-embed-tool/target /static-embed-tool/src /static-embed-tool/Cargo.*
+RUN rm -rf /static-static-embedding-tool/target /static-static-embedding-tool/src /static-static-embedding-tool/Cargo.*
 
-RUN chmod +x /static-embed-tool/static_embedding-tool
+RUN chmod +x /static-static-embedding-tool/static_embedding-tool
 
 ###
 # STAGE: tzdata
@@ -68,7 +68,7 @@ RUN apk add --no-cache tzdata
 
 FROM cgr.dev/chainguard/glibc-dynamic:latest-dev AS dev
 
-COPY --from=build-debug /static-embed-tool/static_embedding-tool /static_embedding-tool
+COPY --from=build-debug /static-static-embedding-tool/static_embedding-tool /static_embedding-tool
 
 COPY --from=tzdata /usr/share/zoneinfo /usr/share/zoneinfo
 
@@ -92,7 +92,7 @@ ENTRYPOINT ["/static_embedding-tool"]
 #
 FROM cgr.dev/chainguard/glibc-dynamic:latest AS prod
 
-COPY --from=build-release /static-embed-tool/static_embedding-tool /static_embedding-tool
+COPY --from=build-release /static-static-embedding-tool/static_embedding-tool /static_embedding-tool
 
 COPY --from=tzdata /usr/share/zoneinfo /usr/share/zoneinfo
 
