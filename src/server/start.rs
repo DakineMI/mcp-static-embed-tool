@@ -11,7 +11,6 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 
 
-#[cfg(feature = "mcp")]
 use crate::server::logs::init_logging_and_metrics;
 use crate::server::api::create_api_router;
 use crate::server::http::health;
