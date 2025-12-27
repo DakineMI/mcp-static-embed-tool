@@ -295,11 +295,7 @@ async fn show_status(custom_pid: Option<&PathBuf>, port: u16) -> AnyhowResult<()
 fn is_process_running(pid: u32) -> bool {
     let mut system = System::new();
     let pid_val = Pid::from(pid as usize);
-    system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::Some(&[pid_val]),
-        true,
-        sysinfo::ProcessRefreshKind::nothing(),
-    );
+    system.refresh_processes_specifics(sysinfo::ProcessRefreshKind::new());
     system.process(pid_val).is_some()
 }
 
@@ -333,11 +329,7 @@ async fn find_server_by_port(port: u16) -> AnyhowResult<Option<u32>> {
 fn terminate_process(pid: u32) -> AnyhowResult<()> {
     let mut system = System::new();
     let pid_val = Pid::from(pid as usize);
-    system.refresh_processes_specifics(
-        sysinfo::ProcessesToUpdate::Some(&[pid_val]),
-        true,
-        sysinfo::ProcessRefreshKind::nothing(),
-    );
+    system.refresh_processes_specifics(sysinfo::ProcessRefreshKind::new());
 
     if let Some(process) = system.process(pid_val) {
         let _ = process.kill();
