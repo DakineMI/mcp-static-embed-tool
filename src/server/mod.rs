@@ -5,10 +5,12 @@
 pub mod api;
 pub mod errors;
 pub mod http;
-pub mod logs;
 pub mod start;
 pub mod start_simple;
 pub mod state;
+
+#[cfg(feature = "mcp")]
+pub mod logs;
 
 use serde::{Deserialize, Serialize};
 

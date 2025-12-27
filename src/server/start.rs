@@ -10,6 +10,8 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 
+
+#[cfg(feature = "mcp")]
 use crate::server::logs::init_logging_and_metrics;
 use crate::server::api::create_api_router;
 use crate::server::http::health;
@@ -85,6 +87,7 @@ pub async fn start_server(config: ServerConfig) -> AnyhowResult<()> {
 
 async fn start_stdio_server(_config: ServerConfig) -> AnyhowResult<()> {
     // Initialize structured logging (stderr only for stdio mode)
+    #[cfg(feature = "mcp")]
     init_logging_and_metrics(false);
 
     info!("Starting MCP server in stdio mode");
@@ -149,6 +152,7 @@ async fn start_http_server(config: ServerConfig) -> AnyhowResult<()> {
     // Get the specified bind address
     let bind_address = bind_address.as_deref().unwrap();
     // Initialize structured logging and metrics
+    #[cfg(feature = "mcp")]
     init_logging_and_metrics(false);
     // Output debugging information
     info!(
