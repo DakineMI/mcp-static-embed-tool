@@ -10,7 +10,7 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 
-use crate::logs::init_logging_and_metrics;
+use crate::server::logs::init_logging_and_metrics;
 use crate::server::api::create_api_router;
 use crate::server::http::health;
 use crate::server::state::AppState;

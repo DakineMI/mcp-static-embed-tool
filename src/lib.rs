@@ -10,9 +10,6 @@ pub mod tools;
 #[cfg(feature = "mcp")]
 pub mod resources;
 
-#[cfg(feature = "mcp")]
-pub mod logs;
-
 pub mod utils;
 pub mod embed;
 
